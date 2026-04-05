@@ -10,12 +10,19 @@ import (
 
 func TestLoad_FileNotFound(t *testing.T) {
 	// Create a temp directory with no config file
+	// With RMS .env as base, Load() succeeds if rmsEnvPath exists
+	// We test that it returns values (from RMS .env or defaults)
 	tmpDir := t.TempDir()
 	configPath = filepath.Join(tmpDir, "nonexistent.yaml")
 
-	_, err := Load()
-	if err == nil {
-		t.Error("expected error for non-existent config file, got nil")
+	cfg, err := Load()
+	// Now Load() doesn't fail if config file missing (RMS .env is base)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Should have loaded from RMS .env if it exists
+	if cfg.APIKey == "" || cfg.WorkspaceID == "" {
+		t.Log("APIKey or WorkspaceID is empty (RMS .env may not exist)")
 	}
 }
 

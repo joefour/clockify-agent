@@ -3,11 +3,14 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 )
 
 var configPath = filepath.Join(os.Getenv("HOME"), ".config", "clockify-agent", "config.yaml")
+
+const rmsEnvPath = "/Users/loithai/Projects/accenturesoft/rms/mcp-servers/clockify/.env"
 
 type Config struct {
 	APIKey           string `toml:"api_key"`
@@ -19,12 +22,30 @@ type Config struct {
 func Load() (*Config, error) {
 	cfg := &Config{}
 
-	_, err := toml.DecodeFile(configPath, cfg)
-	if err != nil {
-		return nil, err
+	// 1. Load from RMS .env as base
+	if data, err := os.ReadFile(rmsEnvPath); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			if idx := strings.Index(line, "="); idx > 0 {
+				key := strings.TrimSpace(line[:idx])
+				val := strings.TrimSpace(line[idx+1:])
+				switch key {
+				case "CLOCKIFY_API_KEY":
+					cfg.APIKey = val
+				case "CLOCKIFY_WORKSPACE_ID":
+					cfg.WorkspaceID = val
+				}
+			}
+		}
 	}
 
-	// Override with env vars if set
+	// 2. Override with user config file if it exists
+	toml.DecodeFile(configPath, cfg)
+
+	// 3. Override with env vars
 	if val := os.Getenv("CLOCKIFY_API_KEY"); val != "" {
 		cfg.APIKey = val
 	}

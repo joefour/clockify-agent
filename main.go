@@ -173,7 +173,7 @@ func runLog() error {
 	if overlap && conflictingEntry != nil {
 		entryStart := parseTimeEntryTime(conflictingEntry.Start)
 		entryEnd := parseTimeEntryTime(conflictingEntry.End)
-		return fmt.Errorf("Entry overlaps with existing entry %q (%s - %s)", conflictingEntry.Name, entryStart.Format("15:04"), entryEnd.Format("15:04"))
+		return fmt.Errorf("Entry overlaps with existing entry %s (%s - %s)", conflictingEntry.Name, entryStart.Format("15:04"), entryEnd.Format("15:04"))
 	}
 
 	// Check 14h cap
@@ -211,12 +211,12 @@ func runLog() error {
 	}
 
 	fmt.Println("Created time entry:")
-	fmt.Printf("  Card:       %s\n", result.Name)
+	fmt.Printf("  Card:        %s\n", result.Name)
 	fmt.Printf("  Description: %s\n", result.Description)
-	fmt.Printf("  Start:      %s\n", result.Start)
-	fmt.Printf("  End:        %s\n", result.End)
-	fmt.Printf("  Duration:   %s\n", timeutil.FormatDuration(int(endTime.Sub(startTime).Seconds())))
-	fmt.Printf("  Project:    %s\n", result.ProjectID)
+	fmt.Printf("  Start:       %s\n", result.Start)
+	fmt.Printf("  End:         %s\n", result.End)
+	fmt.Printf("  Duration:    %s\n", timeutil.FormatDuration(int(endTime.Sub(startTime).Seconds())))
+	fmt.Printf("  Project:     %s\n", result.ProjectID)
 
 	return nil
 }

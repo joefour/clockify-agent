@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "Bash(go mod:*)",
-      "Bash(git init:*)"
+      "Bash(git init:*)",
+      "Bash(go get:*)"
     ]
   }
 }

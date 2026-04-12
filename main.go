@@ -19,9 +19,11 @@ import (
 
 func usage() {
 	fmt.Println(`Usage:
-  clockify log <card-url> <duration>
-  clockify log <card-url> <start> <end>
-  clockify log <card-url> <start> <duration>
+  clockify log [card-url] <duration>
+  clockify log [card-url] <start> <end>
+  clockify log [card-url] <start> <duration>
+  clockify log --description "text" <duration>
+  clockify log --description "text" <start> <duration>
 
   clockify summary <preset>
   clockify summary --from YYYY-MM-DD --to YYYY-MM-DD
@@ -31,8 +33,9 @@ Presets: today, yesterday, this-week, last-week, this-month, last-month
 Log flags:
   --date YYYY-MM-DD    Date for the entry (default: today)
   --dry-run            Print entry details without creating
-  --project-id ID      Override default project ID
+  --project-id ID      Override default project ID (required with --description)
   --task-id ID         Task ID for the entry
+  --description TEXT   Description for entry (use instead of card URL)
 
 Summary flags:
   --by-task            Show per-task breakdown within each project

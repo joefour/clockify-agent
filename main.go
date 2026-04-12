@@ -300,10 +300,18 @@ func runLog(args []string, dateStr string, dryRun bool, projectIDOverride, taskI
 	}
 
 	// Create entry
+	entryName := cardInfo.CardNumber
+	if entryName == "" {
+		// When no card, use first part of description (truncated to reasonable length)
+		entryName = description
+		if len(entryName) > 50 {
+			entryName = entryName[:50]
+		}
+	}
 	entryReq := clockify.TimeEntryRequest{
 		ProjectID:   projectID,
 		TaskID:      resolvedTaskID,
-		Name:        cardInfo.CardNumber,
+		Name:        entryName,
 		Description: cardInfo.Title,
 		Start:       startTime.Format(time.RFC3339),
 		End:         endTime.Format(time.RFC3339),
@@ -316,12 +324,18 @@ func runLog(args []string, dateStr string, dryRun bool, projectIDOverride, taskI
 	}
 
 	fmt.Println("Created time entry:")
-	fmt.Printf("  Card:        %s\n", result.Name)
-	fmt.Printf("  Description: %s\n", result.Description)
+	if cardInfo.CardNumber != "" {
+		fmt.Printf("  Card:        %s\n", result.Name)
+	} else {
+		fmt.Printf("  Description: %s\n", result.Description)
+	}
 	fmt.Printf("  Start:       %s\n", result.TimeInterval.Start)
 	fmt.Printf("  End:         %s\n", result.TimeInterval.End)
 	fmt.Printf("  Duration:    %s\n", timeutil.FormatDuration(int(endTime.Sub(startTime).Seconds())))
 	fmt.Printf("  Project:     %s\n", result.ProjectID)
+	if result.TaskID != "" {
+		fmt.Printf("  Task:        %s\n", result.TaskID)
+	}
 
 	return nil
 }

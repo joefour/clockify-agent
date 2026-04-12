@@ -227,10 +227,10 @@ func runLog(args []string, dateStr string, dryRun bool, projectIDOverride, taskI
 	// Create Clockify client
 	client := clockify.NewClient(cfg.APIKey, cfg.WorkspaceID)
 
-	// Resolve task: if not provided, find or create task with name = card number (with # prefix)
+	// Resolve task: only when card URL is provided (task is tied to card number)
 	resolvedTaskID := taskID
-	taskName := "#" + cardInfo.CardNumber
-	if resolvedTaskID == "" {
+	if cardURL != "" && resolvedTaskID == "" {
+		taskName := "#" + cardInfo.CardNumber
 		tasks, err := client.ListTasks(projectID)
 		if err != nil {
 			return fmt.Errorf("failed to list tasks: %w", err)
@@ -249,6 +249,7 @@ func runLog(args []string, dateStr string, dryRun bool, projectIDOverride, taskI
 			resolvedTaskID = newTask.ID
 		}
 	}
+	// When no card URL, taskID stays empty (no task association)
 
 	// List existing entries for the date (for overlap validation)
 	entries, err := client.GetDetailedReport(dateStr+"T00:00:00Z", dateStr+"T23:59:59Z")

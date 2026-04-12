@@ -215,13 +215,17 @@ func runLog(args []string, dateStr string, dryRun bool, projectIDOverride, taskI
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
-	// Determine project ID via board mapping
+	// Determine project ID
 	projectID := projectIDOverride
-	if projectID == "" {
+	if projectID == "" && cardURL != "" {
+		// Use board mapping when card URL is provided
 		projectID = cfg.GetClockifyProjectID(cardInfo.BoardID, "")
 	}
+	if projectID == "" && description == "" {
+		return errors.New("no project ID found (configure board-to-project mapping in config or use --project-id)")
+	}
 	if projectID == "" {
-		return errors.New("no project ID found (configure board-to-project mapping in config)")
+		return errors.New("--project-id is required when using --description without a card URL")
 	}
 
 	// Create Clockify client

@@ -164,10 +164,19 @@ func runLog(args []string, dateStr string, dryRun bool, projectIDOverride, taskI
 		return fmt.Errorf("invalid date format: %w", err)
 	}
 
-	// Fetch card info
-	cardInfo, err := trello.FetchCard(cardURL)
-	if err != nil {
-		return fmt.Errorf("failed to fetch card info: %w", err)
+	// Fetch card info only when card URL is provided
+	var cardInfo *trello.CardInfo
+	if cardURL != "" {
+		cardInfo, err = trello.FetchCard(cardURL)
+		if err != nil {
+			return fmt.Errorf("failed to fetch card info: %w", err)
+		}
+	} else {
+		// No card URL — create a placeholder CardInfo with description
+		cardInfo = &trello.CardInfo{
+			CardNumber: "",
+			Title:      description,
+		}
 	}
 
 	// Compute start and end times based on mode

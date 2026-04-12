@@ -93,11 +93,18 @@ func main() {
 }
 
 func runLog(args []string, dateStr string, dryRun bool, projectIDOverride, taskID, description string) error {
-	if len(args) < 2 {
-		return errors.New("invalid arguments: expected <card-url> <duration> or <card-url> <start> <end>")
+	// Determine if we have a card URL or using description-only mode
+	if len(args) < 1 && description == "" {
+		return errors.New("invalid arguments: provide a card URL or --description")
+	}
+	if len(args) < 2 && description == "" {
+		return errors.New("invalid arguments: expected <duration> or <start> <end>")
 	}
 
-	cardURL := args[0]
+	cardURL := ""
+	if len(args) >= 1 {
+		cardURL = args[0]
+	}
 
 	// Detect mode by arg count
 	var startStr, endStr, durationStr string

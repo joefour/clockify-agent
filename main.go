@@ -283,12 +283,19 @@ func runLog(args []string, dateStr string, dryRun bool, projectIDOverride, taskI
 	// Dry run
 	if dryRun {
 		fmt.Println("Would create time entry:")
-		fmt.Printf("  Card:        %s\n", cardInfo.CardNumber)
+		if cardInfo.CardNumber != "" {
+			fmt.Printf("  Card:        %s\n", cardInfo.CardNumber)
+		} else {
+			fmt.Printf("  Card:        (no ticket)\n")
+		}
 		fmt.Printf("  Description: %s\n", cardInfo.Title)
 		fmt.Printf("  Start:       %s\n", startTime.Format(time.RFC3339))
 		fmt.Printf("  End:         %s\n", endTime.Format(time.RFC3339))
 		fmt.Printf("  Duration:    %s\n", timeutil.FormatDuration(durationSeconds))
 		fmt.Printf("  Project:     %s\n", projectID)
+		if resolvedTaskID != "" {
+			fmt.Printf("  Task:        %s\n", resolvedTaskID)
+		}
 		return nil
 	}
 

@@ -96,17 +96,18 @@ func main() {
 }
 
 func runLog(args []string, dateStr string, dryRun bool, projectIDOverride, taskID, description string) error {
-	// Determine if we have a card URL or using description-only mode
+	// Determine card URL first (only relevant when no description)
+	cardURL := ""
+	if description == "" && len(args) >= 1 {
+		cardURL = args[0]
+	}
+
+	// Validate arguments
 	if len(args) < 1 && description == "" {
 		return errors.New("invalid arguments: provide a card URL or --description")
 	}
-	if len(args) < 2 && description == "" {
+	if description == "" && cardURL != "" && len(args) < 2 {
 		return errors.New("invalid arguments: expected <duration> or <start> <end>")
-	}
-
-	cardURL := ""
-	if len(args) >= 1 {
-		cardURL = args[0]
 	}
 
 	// Detect mode by arg count
@@ -114,20 +115,30 @@ func runLog(args []string, dateStr string, dryRun bool, projectIDOverride, taskI
 	var durationSeconds int
 	var err error
 
-	if len(args) == 2 {
-		// Mode A: cardURL + duration
-		durationStr = args[1]
-		durationSeconds, err = timeutil.ParseDuration(durationStr)
-		if err != nil {
-			return fmt.Errorf("invalid duration format: %w", err)
-		}
-	} else if len(args) == 3 {
-		// Mode B or C: need to determine by parsing 2nd arg
-		if _, err = timeutil.ParseTimeHHMM(args[1]); err == nil {
-			if _, err = timeutil.ParseTimeHHMM(args[2]); err == nil {
-				// Mode B: start + end (both times)
-				startStr = args[1]
-				endStr = args[2]
+	if cardURL != "" {
+		// Normal mode: args[0] is cardURL
+		if len(args) == 2 {
+			// Mode A: cardURL + duration
+			durationStr = args[1]
+			durationSeconds, err = timeutil.ParseDuration(durationStr)
+			if err != nil {
+				return fmt.Errorf("invalid duration format: %w", err)
+			}
+		} else if len(args) == 3 {
+			if _, err = timeutil.ParseTimeHHMM(args[1]); err == nil {
+				if _, err = timeutil.ParseTimeHHMM(args[2]); err == nil {
+					// Mode B: start + end
+					startStr = args[1]
+					endStr = args[2]
+				} else {
+					// Mode C: start + duration
+					startStr = args[1]
+					durationStr = args[2]
+					durationSeconds, err = timeutil.ParseDuration(durationStr)
+					if err != nil {
+						return fmt.Errorf("invalid duration format: %w", err)
+					}
+				}
 			} else {
 				// Mode C: start + duration
 				startStr = args[1]
@@ -138,16 +149,40 @@ func runLog(args []string, dateStr string, dryRun bool, projectIDOverride, taskI
 				}
 			}
 		} else {
-			// Mode C: start + duration
-			startStr = args[1]
-			durationStr = args[2]
+			return errors.New("invalid arguments")
+		}
+	} else {
+		// No-card mode: args[0] is duration or start time
+		if len(args) == 1 {
+			// Mode A: duration only
+			durationStr = args[0]
 			durationSeconds, err = timeutil.ParseDuration(durationStr)
 			if err != nil {
 				return fmt.Errorf("invalid duration format: %w", err)
 			}
+		} else if len(args) == 2 {
+			if _, err = timeutil.ParseTimeHHMM(args[0]); err == nil {
+				// args[0] is start time
+				if _, err = timeutil.ParseTimeHHMM(args[1]); err == nil {
+					// Mode B: start + end
+					startStr = args[0]
+					endStr = args[1]
+				} else {
+					// Mode C: start + duration
+					startStr = args[0]
+					durationStr = args[1]
+					durationSeconds, err = timeutil.ParseDuration(durationStr)
+					if err != nil {
+						return fmt.Errorf("invalid duration format: %w", err)
+					}
+				}
+			} else {
+				// args[0] is duration, args[1] is something else - invalid
+				return errors.New("invalid arguments")
+			}
+		} else {
+			return errors.New("invalid arguments")
 		}
-	} else {
-		return errors.New("invalid arguments")
 	}
 
 	// Add 1-5% random adjustment to duration to avoid exact round numbers

@@ -16,8 +16,7 @@ func TestCreateEntry_Success(t *testing.T) {
 		TaskID:      "",
 		Name:        "Test Entry",
 		Description: "Test Description",
-		Start:       "2026-04-05T09:00:00Z",
-		End:         "2026-04-05T10:00:00Z",
+		TimeInterval: TimeInterval{Start: "2026-04-05T09:00:00Z", End: "2026-04-05T10:00:00Z"},
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -122,16 +121,14 @@ func TestListEntriesForDate(t *testing.T) {
 			ProjectID:   "project1",
 			Name:        "Entry 1",
 			Description: "Desc 1",
-			Start:       "2026-04-05T09:00:00Z",
-			End:         "2026-04-05T10:00:00Z",
+			TimeInterval: TimeInterval{Start: "2026-04-05T09:00:00Z", End: "2026-04-05T10:00:00Z"},
 		},
 		{
 			ID:          "entry2",
 			ProjectID:   "project2",
 			Name:        "Entry 2",
 			Description: "Desc 2",
-			Start:       "2026-04-05T11:00:00Z",
-			End:         "2026-04-05T12:00:00Z",
+			TimeInterval: TimeInterval{Start: "2026-04-05T11:00:00Z", End: "2026-04-05T12:00:00Z"},
 		},
 	}
 

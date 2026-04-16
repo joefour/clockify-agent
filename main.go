@@ -113,6 +113,7 @@ func runLog(args []string, dateStr string, dryRun bool, projectIDOverride, taskI
 	// Detect mode by arg count
 	var startStr, endStr, durationStr string
 	var durationSeconds int
+	var relativeStartSeconds int // seconds ago for relative start time (e.g., "4h ago" = 4*3600)
 	var err error
 
 	if cardURL != "" {
@@ -125,7 +126,16 @@ func runLog(args []string, dateStr string, dryRun bool, projectIDOverride, taskI
 				return fmt.Errorf("invalid duration format: %w", err)
 			}
 		} else if len(args) == 3 {
-			if _, err = timeutil.ParseTimeHHMM(args[1]); err == nil {
+			// Check if args[1] is a relative time like "4h ago"
+			if relSecs, relErr := timeutil.ParseRelativeTime(args[1]); relErr == nil {
+				// Relative start time + duration: "4h ago" + "30m"
+				relativeStartSeconds = relSecs
+				durationStr = args[2]
+				durationSeconds, err = timeutil.ParseDuration(durationStr)
+				if err != nil {
+					return fmt.Errorf("invalid duration format: %w", err)
+				}
+			} else if _, err = timeutil.ParseTimeHHMM(args[1]); err == nil {
 				if _, err = timeutil.ParseTimeHHMM(args[2]); err == nil {
 					// Mode B: start + end
 					startStr = args[1]
@@ -194,6 +204,7 @@ func runLog(args []string, dateStr string, dryRun bool, projectIDOverride, taskI
 	}
 
 	// Parse date
+	dateStrExplicit := dateStr != ""
 	if dateStr == "" {
 		dateStr = time.Now().Format("2006-01-02")
 	}
@@ -223,9 +234,24 @@ func runLog(args []string, dateStr string, dryRun bool, projectIDOverride, taskI
 
 	var startTime, endTime time.Time
 
-	if durationStr != "" && startStr == "" {
+	if relativeStartSeconds > 0 {
+		// Relative start time mode: "4h ago" + "30m"
+		// Calculate start time as now - relativeStartSeconds
+		now := time.Now().In(vntLoc)
+		if dateStrExplicit {
+			now = time.Date(year, time.Month(month), day, 0, 0, 0, 0, vntLoc)
+		}
+		startTime = now.Add(-time.Duration(relativeStartSeconds) * time.Second)
+		endTime = startTime.Add(time.Duration(durationSeconds) * time.Second)
+	} else if durationStr != "" && startStr == "" {
 		// Mode A: start = now - duration, end = now (in VNT)
-		now := time.Now()
+		// Get current time in VNT
+		now := time.Now().In(vntLoc)
+		// If --date was explicitly provided, interpret "now" as 00:00 on that date
+		// This ensures "4h ago" with --date 2026-04-16 means 20:00 on April 15
+		if dateStrExplicit {
+			now = time.Date(year, time.Month(month), day, 0, 0, 0, 0, vntLoc)
+		}
 		endTime = time.Date(year, time.Month(month), day, now.Hour(), now.Minute(), now.Second(), 0, vntLoc).UTC()
 		startTime = endTime.Add(-time.Duration(durationSeconds) * time.Second)
 	} else if endStr != "" {
@@ -374,6 +400,13 @@ func runLog(args []string, dateStr string, dryRun bool, projectIDOverride, taskI
 	if result.TaskID != "" {
 		fmt.Printf("  Task:        %s\n", result.TaskID)
 	}
+	fmt.Printf("  Link:       https://app.clockify.me/workspaces/%s/time-entries/%s\n", client.WorkspaceID(), result.ID)
+
+	// Print project total for today
+	fmt.Println()
+	if err := printProjectTotalToday(client, result.ProjectID); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: Could not fetch project total: %v\n", err)
+	}
 
 	return nil
 }
@@ -434,6 +467,43 @@ func runSummary(preset, from, to string, byTask bool) error {
 	fmt.Println(strings.Repeat("\u2500", 40))
 	fmt.Printf("%-35s %s\n", "Total", timeutil.FormatDuration(grandTotal))
 
+	return nil
+}
+
+func printProjectTotalToday(client *clockify.Client, projectID string) error {
+	now := time.Now()
+	today := now.Format("2006-01-02")
+
+	entries, err := client.GetDetailedReport(today+"T00:00:00Z", today+"T23:59:59Z")
+	if err != nil {
+		return err
+	}
+
+	projects, err := client.ListProjects()
+	if err != nil {
+		return err
+	}
+
+	totals := summary.ComputeProjectTotals(entries, projects)
+
+	// Find the total for the specified project
+	projectName := projectID
+	for _, p := range projects {
+		if p.ID == projectID {
+			projectName = p.Name
+			break
+		}
+	}
+
+	for _, pt := range totals {
+		if pt.Name == projectName || pt.Name == projectID {
+			fmt.Printf("Project total today: %s (%s)\n", projectName, timeutil.FormatDuration(pt.Duration))
+			return nil
+		}
+	}
+
+	// Project not found in entries yet (might be the only entry today)
+	fmt.Printf("Project total today: %s (0:00)\n", projectName)
 	return nil
 }
 

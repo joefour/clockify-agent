@@ -23,8 +23,8 @@ func TestDailyTotal_SumOfDurations(t *testing.T) {
 	// Entry 2: 13:00-15:30 = 2.5 hours = 9000 seconds
 	// Total = 16200 seconds
 	entries := []clockify.TimeEntry{
-		{ID: "1", Start: "2026-04-05T09:00:00Z", End: "2026-04-05T11:00:00Z"},
-		{ID: "2", Start: "2026-04-05T13:00:00Z", End: "2026-04-05T15:30:00Z"},
+		{ID: "1", TimeInterval: clockify.TimeInterval{Start: "2026-04-05T09:00:00Z", End: "2026-04-05T11:00:00Z"}},
+		{ID: "2", TimeInterval: clockify.TimeInterval{Start: "2026-04-05T13:00:00Z", End: "2026-04-05T15:30:00Z"}},
 	}
 	date := time.Date(2026, 4, 5, 0, 0, 0, 0, time.UTC)
 

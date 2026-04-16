@@ -13,8 +13,8 @@ import (
 func HasOverlap(start, end time.Time, entries []clockify.TimeEntry) (bool, *clockify.TimeEntry) {
 	for i := range entries {
 		entry := &entries[i]
-		entryStart := parseTimeEntryTime(entry.Start)
-		entryEnd := parseTimeEntryTime(entry.End)
+		entryStart := parseTimeEntryTime(entry.TimeInterval.Start)
+		entryEnd := parseTimeEntryTime(entry.TimeInterval.End)
 
 		// Check overlap: new_start < existing_end AND new_end > existing_start
 		if start.Before(entryEnd) && end.After(entryStart) {

@@ -10,7 +10,7 @@ import (
 func TestHasOverlap_NoOverlap_DifferentDays(t *testing.T) {
 	// Entry on April 5, new entry on April 6 - no overlap
 	entries := []clockify.TimeEntry{
-		{ID: "1", Start: "2026-04-05T09:00:00Z", End: "2026-04-05T10:00:00Z"},
+		{ID: "1", TimeInterval: clockify.TimeInterval{Start: "2026-04-05T09:00:00Z", End: "2026-04-05T10:00:00Z"}},
 	}
 
 	start := time.Date(2026, 4, 6, 9, 0, 0, 0, time.UTC)
@@ -29,7 +29,7 @@ func TestHasOverlap_NoOverlap_DifferentDays(t *testing.T) {
 func TestHasOverlap_NoOverlap_EntriesDontTouch(t *testing.T) {
 	// Existing entry: 09:00-10:00, new entry: 10:00-11:00 - they touch at endpoints
 	entries := []clockify.TimeEntry{
-		{ID: "1", Start: "2026-04-05T09:00:00Z", End: "2026-04-05T10:00:00Z"},
+		{ID: "1", TimeInterval: clockify.TimeInterval{Start: "2026-04-05T09:00:00Z", End: "2026-04-05T10:00:00Z"}},
 	}
 
 	start := time.Date(2026, 4, 5, 10, 0, 0, 0, time.UTC)
@@ -48,7 +48,7 @@ func TestHasOverlap_NoOverlap_EntriesDontTouch(t *testing.T) {
 func TestHasOverlap_NoOverlap_BoundaryCase(t *testing.T) {
 	// Existing entry: 09:00-10:00, new entry: 10:01-11:00 - no overlap (strict inequality)
 	entries := []clockify.TimeEntry{
-		{ID: "1", Start: "2026-04-05T09:00:00Z", End: "2026-04-05T10:00:00Z"},
+		{ID: "1", TimeInterval: clockify.TimeInterval{Start: "2026-04-05T09:00:00Z", End: "2026-04-05T10:00:00Z"}},
 	}
 
 	start := time.Date(2026, 4, 5, 10, 1, 0, 0, time.UTC)
@@ -67,7 +67,7 @@ func TestHasOverlap_NoOverlap_BoundaryCase(t *testing.T) {
 func TestHasOverlap_Overlap_PartialOverlap(t *testing.T) {
 	// Existing: 09:00-10:00, new: 09:30-10:30 - partial overlap
 	entries := []clockify.TimeEntry{
-		{ID: "1", Start: "2026-04-05T09:00:00Z", End: "2026-04-05T10:00:00Z"},
+		{ID: "1", TimeInterval: clockify.TimeInterval{Start: "2026-04-05T09:00:00Z", End: "2026-04-05T10:00:00Z"}},
 	}
 
 	start := time.Date(2026, 4, 5, 9, 30, 0, 0, time.UTC)
@@ -89,7 +89,7 @@ func TestHasOverlap_Overlap_PartialOverlap(t *testing.T) {
 func TestHasOverlap_Overlap_NewInsideExisting(t *testing.T) {
 	// Existing: 09:00-12:00, new: 10:00-11:00 - new is completely inside existing
 	entries := []clockify.TimeEntry{
-		{ID: "1", Start: "2026-04-05T09:00:00Z", End: "2026-04-05T12:00:00Z"},
+		{ID: "1", TimeInterval: clockify.TimeInterval{Start: "2026-04-05T09:00:00Z", End: "2026-04-05T12:00:00Z"}},
 	}
 
 	start := time.Date(2026, 4, 5, 10, 0, 0, 0, time.UTC)
@@ -111,7 +111,7 @@ func TestHasOverlap_Overlap_NewInsideExisting(t *testing.T) {
 func TestHasOverlap_Overlap_ExistingInsideNew(t *testing.T) {
 	// Existing: 10:00-11:00, new: 09:00-12:00 - existing is completely inside new
 	entries := []clockify.TimeEntry{
-		{ID: "1", Start: "2026-04-05T10:00:00Z", End: "2026-04-05T11:00:00Z"},
+		{ID: "1", TimeInterval: clockify.TimeInterval{Start: "2026-04-05T10:00:00Z", End: "2026-04-05T11:00:00Z"}},
 	}
 
 	start := time.Date(2026, 4, 5, 9, 0, 0, 0, time.UTC)

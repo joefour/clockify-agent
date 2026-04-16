@@ -3,14 +3,20 @@ package timeutil
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
-// ParseDuration parses "H:MM:SS" or "H:MM" format. Returns total seconds.
-// "2:12:05" → 7725 (2*3600 + 12*60 + 5)
-// "2:12" → 7320 (2*3600 + 12*60)
-// "0:05" → 300
+// ParseDuration parses duration strings. Returns total seconds.
+// Supported formats:
+//   - "H:MM:SS" or "H:MM" (e.g., "2:12:05" → 7725, "2:12" → 7320)
+//   - "32m" (32 minutes), "1h" (1 hour), "1h30m" (1h30m)
 func ParseDuration(s string) (int, error) {
+	// Try "XhYm" / "Xh" / "Ym" format first
+	if strings.Contains(s, "h") || strings.Contains(s, "m") {
+		return parseHumanDuration(s)
+	}
+
 	parts := strings.Split(s, ":")
 	if len(parts) < 2 || len(parts) > 3 {
 		return 0, errors.New("invalid duration format")
@@ -92,6 +98,54 @@ func ParseDate(s string) (year, month, day int, err error) {
 	}
 
 	return year, month, day, nil
+}
+
+// parseHumanDuration parses "1h30m", "1h", "30m" style durations.
+func parseHumanDuration(s string) (int, error) {
+	total := 0
+	remaining := s
+
+	for len(remaining) > 0 {
+		idx := strings.IndexFunc(remaining, func(r rune) bool { return r < '0' || r > '9' })
+		if idx <= 0 {
+			return 0, errors.New("invalid duration format")
+		}
+		val, err := strconv.Atoi(remaining[:idx])
+		if err != nil {
+			return 0, errors.New("invalid duration number")
+		}
+		unit := remaining[idx]
+		remaining = remaining[idx+1:]
+
+		switch unit {
+		case 'h':
+			total += val * 3600
+		case 'm':
+			total += val * 60
+		case 's':
+			total += val
+		default:
+			return 0, fmt.Errorf("unknown duration unit '%c'", unit)
+		}
+	}
+
+	if total == 0 {
+		return 0, errors.New("empty duration")
+	}
+	return total, nil
+}
+
+// ParseRelativeTime parses relative time strings like "4h ago", "30m ago", "1h30m ago".
+// Returns the number of seconds the time is in the past.
+// "4h ago" → 4*3600 = 14400
+// "30m ago" → 30*60 = 1800
+func ParseRelativeTime(s string) (int, error) {
+	s = strings.TrimSpace(s)
+	if !strings.HasSuffix(s, " ago") {
+		return 0, errors.New("invalid relative time format")
+	}
+	durationStr := strings.TrimSuffix(s, " ago")
+	return ParseDuration(durationStr)
 }
 
 // FormatDuration converts total seconds back to "H:MM:SS" format.

@@ -10,8 +10,8 @@ import (
 func DailyTotal(date time.Time, entries []clockify.TimeEntry) int {
 	total := 0
 	for _, entry := range entries {
-		entryStart := parseTimeEntryTime(entry.Start)
-		entryEnd := parseTimeEntryTime(entry.End)
+		entryStart := parseTimeEntryTime(entry.TimeInterval.Start)
+		entryEnd := parseTimeEntryTime(entry.TimeInterval.End)
 
 		// Only count entries on the given date
 		if entryStart.Year() == date.Year() &&

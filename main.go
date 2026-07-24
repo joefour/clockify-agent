@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -60,9 +61,13 @@ func main() {
 		flagTaskID := fs.String("task-id", "", "Task ID for the entry")
 		flagDescription := fs.String("description", "", "Description for time entry (use instead of card URL)")
 		fs.Usage = func() { usage() }
-		fs.Parse(os.Args[2:])
+		fsArgs, err := extractFlags(os.Args[2:], fs)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %s\n", err.Error())
+			os.Exit(1)
+		}
 
-		if err := runLog(fs.Args(), *flagDate, *flagDryRun, *flagProjectID, *flagTaskID, *flagDescription); err != nil {
+		if err := runLog(fsArgs, *flagDate, *flagDryRun, *flagProjectID, *flagTaskID, *flagDescription); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %s\n", err.Error())
 			os.Exit(1)
 		}
@@ -73,11 +78,15 @@ func main() {
 		flagFrom := fs.String("from", "", "Start date (YYYY-MM-DD)")
 		flagTo := fs.String("to", "", "End date (YYYY-MM-DD)")
 		fs.Usage = func() { usage() }
-		fs.Parse(os.Args[2:])
+		fsArgs, err := extractFlags(os.Args[2:], fs)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %s\n", err.Error())
+			os.Exit(1)
+		}
 
 		preset := ""
-		if fs.NArg() > 0 {
-			preset = fs.Arg(0)
+		if len(fsArgs) > 0 {
+			preset = fsArgs[0]
 		}
 
 		if err := runSummary(preset, *flagFrom, *flagTo, *flagByTask); err != nil {
@@ -93,6 +102,114 @@ func main() {
 		usage()
 		os.Exit(1)
 	}
+}
+
+// extractFlags walks args, separating flag tokens (anywhere in the list) from
+// positional tokens, and feeds only the flag tokens to fs.Parse. This lets
+// users write `clockify log <url> 2h --date 2026-06-27` (flags after args),
+// which Go's standard flag library does not support on its own.
+func extractFlags(args []string, fs *flag.FlagSet) ([]string, error) {
+	flagArgs := make([]string, 0, len(args))
+	positional := make([]string, 0, len(args))
+
+	boolFlags := map[string]bool{
+		"dry-run": true,
+		"by-task": true,
+	}
+
+	stringFlags := map[string]bool{
+		"date":        true,
+		"project-id":  true,
+		"task-id":     true,
+		"description": true,
+		"from":        true,
+		"to":          true,
+	}
+
+	i := 0
+	for i < len(args) {
+		arg := args[i]
+
+		if arg == "--" {
+			positional = append(positional, args[i+1:]...)
+			break
+		}
+
+		var name string
+		var rest string
+		var hadValue bool
+		switch {
+		case strings.HasPrefix(arg, "--"):
+			name = strings.TrimPrefix(arg, "--")
+		case strings.HasPrefix(arg, "-"):
+			name = strings.TrimPrefix(arg, "-")
+		default:
+			positional = append(positional, arg)
+			i++
+			continue
+		}
+
+		if eq := strings.Index(name, "="); eq >= 0 {
+			rest = name[eq+1:]
+			name = name[:eq]
+			hadValue = true
+		}
+
+		if !boolFlags[name] && !stringFlags[name] {
+			positional = append(positional, arg)
+			i++
+			continue
+		}
+
+		if boolFlags[name] {
+			flagArgs = append(flagArgs, "--"+name)
+			if rest != "" {
+				flagArgs = append(flagArgs, rest)
+			} else if hadValue {
+				// `-flag=` form, no extra token to consume
+			} else {
+				// `-flag` form: for bool, no value follows
+			}
+			i++
+			continue
+		}
+
+		// string flag
+		if rest != "" {
+			flagArgs = append(flagArgs, "--"+name+"="+rest)
+			i++
+			continue
+		}
+		if i+1 >= len(args) {
+			return nil, fmt.Errorf("flag --%s requires a value", name)
+		}
+		next := args[i+1]
+		if strings.HasPrefix(next, "-") && len(next) > 1 && !looksLikeDuration(next) {
+			return nil, fmt.Errorf("flag --%s requires a value", name)
+		}
+		flagArgs = append(flagArgs, "--"+name+"="+next)
+		i += 2
+	}
+
+	if err := fs.Parse(flagArgs); err != nil {
+		return nil, err
+	}
+	return positional, nil
+}
+
+// looksLikeDuration returns true for tokens like "08:00", "2h", "1h30m".
+// Used to disambiguate `-date -08:00` (not valid) from a missing value.
+func looksLikeDuration(s string) bool {
+	if strings.Contains(s, ":") {
+		return true
+	}
+	if strings.Contains(s, "h") || strings.Contains(s, "m") {
+		return true
+	}
+	if _, err := strconv.Atoi(s); err == nil {
+		return true
+	}
+	return false
 }
 
 func runLog(args []string, dateStr string, dryRun bool, projectIDOverride, taskID, description string) error {
@@ -171,7 +288,15 @@ func runLog(args []string, dateStr string, dryRun bool, projectIDOverride, taskI
 				return fmt.Errorf("invalid duration format: %w", err)
 			}
 		} else if len(args) == 2 {
-			if _, err = timeutil.ParseTimeHHMM(args[0]); err == nil {
+			if relSecs, relErr := timeutil.ParseRelativeTime(args[0]); relErr == nil {
+				// Relative start time + duration: "4h ago" + "30m"
+				relativeStartSeconds = relSecs
+				durationStr = args[1]
+				durationSeconds, err = timeutil.ParseDuration(durationStr)
+				if err != nil {
+					return fmt.Errorf("invalid duration format: %w", err)
+				}
+			} else if _, err = timeutil.ParseTimeHHMM(args[0]); err == nil {
 				// args[0] is start time
 				if _, err = timeutil.ParseTimeHHMM(args[1]); err == nil {
 					// Mode B: start + end
@@ -187,7 +312,6 @@ func runLog(args []string, dateStr string, dryRun bool, projectIDOverride, taskI
 					}
 				}
 			} else {
-				// args[0] is duration, args[1] is something else - invalid
 				return errors.New("invalid arguments")
 			}
 		} else {
@@ -283,7 +407,7 @@ func runLog(args []string, dateStr string, dryRun bool, projectIDOverride, taskI
 	projectID := projectIDOverride
 	if projectID == "" && cardURL != "" {
 		// Use board mapping when card URL is provided
-		projectID = cfg.GetClockifyProjectID(cardInfo.BoardID, "")
+		projectID = cfg.GetClockifyProjectID(cardInfo.BoardID, cardInfo.BoardName)
 	}
 	if projectID == "" && description == "" {
 		return errors.New("no project ID found (configure board-to-project mapping in config or use --project-id)")
@@ -320,7 +444,12 @@ func runLog(args []string, dateStr string, dryRun bool, projectIDOverride, taskI
 	// When no card URL, taskID stays empty (no task association)
 
 	// List existing entries for the date (for overlap validation)
-	entries, err := client.GetDetailedReport(dateStr+"T00:00:00Z", dateStr+"T23:59:59Z")
+	var entries []clockify.TimeEntry
+	if cfg.UserID != "" {
+		entries, err = client.ListEntriesForUser(cfg.UserID, dateStr, dateStr)
+	} else {
+		entries, err = client.GetDetailedReport(dateStr+"T00:00:00Z", dateStr+"T23:59:59Z")
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: Could not fetch existing entries for overlap check: %v\n", err)
 		fmt.Fprintf(os.Stderr, "Proceeding without overlap validation.\n")
@@ -474,7 +603,17 @@ func printProjectTotalToday(client *clockify.Client, projectID string) error {
 	now := time.Now()
 	today := now.Format("2006-01-02")
 
-	entries, err := client.GetDetailedReport(today+"T00:00:00Z", today+"T23:59:59Z")
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("failed to load config: %w", err)
+	}
+
+	var entries []clockify.TimeEntry
+	if cfg.UserID != "" {
+		entries, err = client.ListEntriesForUser(cfg.UserID, today, today)
+	} else {
+		entries, err = client.GetDetailedReport(today+"T00:00:00Z", today+"T23:59:59Z")
+	}
 	if err != nil {
 		return err
 	}

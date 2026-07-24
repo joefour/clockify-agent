@@ -29,11 +29,11 @@ func TestResolveDateRange_CustomRange(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if start != "2026-04-01" {
-		t.Errorf("expected start 2026-04-01, got %s", start)
+	if start != "2026-04-01T00:00:00Z" {
+		t.Errorf("expected start 2026-04-01T00:00:00Z, got %s", start)
 	}
-	if end != "2026-04-09" {
-		t.Errorf("expected end 2026-04-09, got %s", end)
+	if end != "2026-04-09T23:59:59Z" {
+		t.Errorf("expected end 2026-04-09T23:59:59Z, got %s", end)
 	}
 	if label != "2026-04-01 -> 2026-04-09" {
 		t.Errorf("unexpected label: %s", label)

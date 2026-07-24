@@ -156,6 +156,8 @@ func ComputeTaskBreakdown(entries []clockify.TimeEntry, projects []clockify.Proj
 			taskName = e.Task.Name
 		} else if e.Name != "" {
 			taskName = e.Name
+		} else if e.Description != "" {
+			taskName = e.Description
 		}
 		if projTasks[pk] == nil {
 			projTasks[pk] = make(map[string]int)

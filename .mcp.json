@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "trello": {
+      "args": [
+        "serve"
+      ],
+      "command": "/Users/loithai/Projects/ai-tools/trello-mcp/bin/trello-mcp",
+      "type": "stdio"
+    }
+  }
+}

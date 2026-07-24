@@ -107,6 +107,10 @@ func (c *Config) GetClockifyProjectID(boardID, boardName string) string {
 		}
 	}
 
+	if boardName == "" {
+		return c.DefaultProjectID
+	}
+
 	// Second: fuzzy name match (case-insensitive substring)
 	boardNameLower := strings.ToLower(boardName)
 	for _, m := range c.ProjectMappings {

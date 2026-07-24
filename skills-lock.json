@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "skills": {
+    "joe-clock": {
+      "source": "/Users/loithai/Projects/ai-agents/clockify-agent/.agents/skills/joe-clock",
+      "sourceType": "local",
+      "computedHash": "df104f980bd628d01fca2f490eedb79ba608d8863a22fd8dd2b31c4b8a104632"
+    }
+  }
+}

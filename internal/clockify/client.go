@@ -197,7 +197,8 @@ func (c *Client) ListProjects() ([]Project, error) {
 }
 
 func (c *Client) ListTasks(projectID string) ([]Task, error) {
-	url := fmt.Sprintf("%s/workspaces/%s/projects/%s/tasks", c.baseURL, c.workspaceID, projectID)
+	// page-size: API default is 50, so older tasks were missed and re-created (400 duplicate)
+	url := fmt.Sprintf("%s/workspaces/%s/projects/%s/tasks?page-size=1000",c.baseURL, c.workspaceID, projectID)
 
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {

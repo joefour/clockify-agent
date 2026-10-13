@@ -135,13 +135,10 @@ fn duration(s: &str) -> Result<i64> {
     timeutil::parse_duration(s).context("invalid duration format")
 }
 
-/// 1 to 5, from the clock's nanoseconds.
+/// 1 to 5, from std's randomly keyed hasher (clock nanos tick in µs on macOS, so % 5 was always 0).
 fn random_percent() -> i64 {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .subsec_nanos();
-    1 + i64::from(nanos % 5)
+    use std::hash::BuildHasher;
+    1 + (std::collections::hash_map::RandomState::new().hash_one(()) % 5) as i64
 }
 
 /// Vietnam time (UTC+7): the zone of every time the user types.
@@ -522,6 +519,14 @@ mod tests {
         assert_eq!(Mode::Relative(14400, 1800).with_extra(3), Mode::Relative(14400, 1854));
         assert_eq!(Mode::StartEnd(32400, 41400).with_extra(5), Mode::StartEnd(32400, 41400));
         assert!((1..=5).contains(&random_percent()));
+    }
+
+    #[test]
+    fn random_percent_varies() {
+        // macOS clocks tick in microseconds, so clock nanos % 5 was always 0 (always 1%).
+        let seen: std::collections::BTreeSet<i64> = (0..200).map(|_| random_percent()).collect();
+        assert!(seen.len() > 1, "{seen:?}");
+        assert!(seen.iter().all(|p| (1..=5).contains(p)), "{seen:?}");
     }
 
     fn utc(s: &str) -> DateTime<Utc> {

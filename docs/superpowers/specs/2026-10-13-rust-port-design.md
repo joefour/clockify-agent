@@ -19,7 +19,7 @@ A Rust `clockify` binary with the same subcommands, flags, output and config sou
 | JSON / TOML | serde, serde_json, toml |
 | Time | chrono; VNT stays `FixedOffset` +07:00 |
 | Errors | anyhow; printed as `Error: {:#}` so wrapped messages keep the Go chain text |
-| Duration jitter | Std clock nanoseconds, no `rand` crate |
+| Duration jitter | Std `RandomState` hash (clock nanos tick in µs on macOS), no `rand` crate |
 | HTTP mocks in tests | mockito (dev-dependency) |
 | Branch | `rust-port`, cut from master after the current uncommitted changes are committed |
 

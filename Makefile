@@ -17,7 +17,7 @@ SIGN_ID     ?= $(or $(shell security find-identity -v -p codesigning 2>/dev/null
 # Unload the login agent and wait until it has exited.
 stop-agent = launchctl bootout gui/$$(id -u)/$(AGENT) 2>/dev/null; while launchctl print gui/$$(id -u)/$(AGENT) >/dev/null 2>&1; do sleep 0.2; done
 
-.PHONY: build test tray-test app check install uninstall
+.PHONY: build test tray-test app check install-cli install uninstall
 
 build: ## compile the CLI
 	cargo build --release
@@ -38,12 +38,17 @@ app: ## build build/Clockify Agent.app, signed with SIGN_ID
 
 check: test tray-test
 
-install: build app ## install the CLI, run the tray now and at every login
+# Leaves the tray alone, so a tray session (claude -p) can run it: install stops the
+# tray, and with it that session, before it reloads.
+install-cli: build ## install the CLI only
+	mkdir -p $(BIN_DIR)
+	install -m 755 $(CLI) $(BIN_DIR)/
+
+install: install-cli app ## install the CLI, run the tray now and at every login
 	sed -e 's|@HOME@|$(HOME)|g' -e 's|@REPO@|$(CURDIR)|g' tray/$(AGENT).plist > $(AGENT).plist.tmp
 	plutil -lint $(AGENT).plist.tmp
 	@$(stop-agent)
-	mkdir -p $(BIN_DIR) "$(APP_DIR)" $(dir $(AGENT_PLIST))
-	install -m 755 $(CLI) $(BIN_DIR)/
+	mkdir -p "$(APP_DIR)" $(dir $(AGENT_PLIST))
 	rm -rf "$(APP_DIR)/$(APP)" && cp -R "build/$(APP)" "$(APP_DIR)/"
 	/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$(APP_DIR)/$(APP)"
 	mv $(AGENT).plist.tmp $(AGENT_PLIST)

@@ -7,6 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 CLI for logging time entries and viewing summaries from Clockify. Rust, one crate at the repo root; the binary is `clockify`.
 
 - **Build**: `make build` (`cargo build --release`, binary at `target/release/clockify`)
+- **Install**: `make install-cli` copies it to `~/.local/bin/clockify` and leaves the tray alone. `make install` also stops, reinstalls and restarts the tray, so a tray session must not run it.
 - **Test**: `cargo test`
 - **Single test**: `cargo test validator::tests::overlap_skips_running_timer`
 - **Lint**: `cargo clippy --all-targets -- -D warnings`

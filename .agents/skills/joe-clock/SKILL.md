@@ -13,7 +13,7 @@ Clockify time-tracking helper. Log entries, view summaries, and resolve format q
 
 If missing, rebuild from source:
 ```bash
-cd /Users/loithai/Projects/ai-tools/clockify-agent && make install
+cd /Users/loithai/Projects/ai-tools/clockify-agent && make install-cli
 ```
 
 Verify:
@@ -216,7 +216,7 @@ Project total today: <project-name> (4:30)
 ### "Command not found"
 ```bash
 # Reinstall
-cd /Users/loithai/Projects/ai-tools/clockify-agent && make install
+cd /Users/loithai/Projects/ai-tools/clockify-agent && make install-cli
 ```
 
 ### "failed to fetch card info"
@@ -251,6 +251,6 @@ For those, use other tools/skills.
 
 ```bash
 cd /Users/loithai/Projects/ai-tools/clockify-agent
-make install
+make install-cli
 cargo test
 ```

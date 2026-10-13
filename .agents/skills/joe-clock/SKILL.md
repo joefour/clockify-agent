@@ -1,6 +1,6 @@
 ---
-name: joe-clock
-description: "Joe's Clockify time-tracking helper - Use when logging time entries to Clockify (with or without a Trello card URL), checking time summaries, resolving duration/time/date formats, or troubleshooting Clockify API errors. Triggers for: log 2h to this ticket, clock hours on a card, log time on a Trello card, log 30m ago for 1h, log 9:00 to 11:30, what did I log today, how much time this week, show summary by task, check my time this week, dry run this entry, fix overlap, fix 14h cap, set up Clockify config, board-to-project mapping, add a Trello board to Clockify. This skill is strictly limited to Clockify time tracking and does not handle Slack, Trello browsing, weekly reports, or other PM tasks."
+name: clockify
+description: "Clockify time-tracking helper for logging, summarizing, and validating time entries against Clockify constraints. Triggers include: log time to a Trello card, log start-and-duration or start-and-end ranges, log durations like 2h/1h30m, dry-run validation, by-task/project summaries, and resolving overlap/14h daily cap issues. This skill is strictly limited to Clockify time tracking and does not handle Slack, Trello browsing, weekly reports, or other PM tasks. Context note: if many skills are loaded, descriptions may be shortened to fit the 2% skills context budget, so disable unused skills/plugins to preserve room for active ones."
 ---
 
 # joe-clock

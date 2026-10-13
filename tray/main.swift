@@ -446,6 +446,20 @@ do {
     precondition(e.code == .ENOENT, "ENOENT: \(e)")
 }
 
+// Panel's pure parts
+let t0 = Date(timeIntervalSince1970: 0)
+precondition(metaText(.idle, now: t0) == "Sonnet 5.5 · bypass", "meta idle")
+precondition(metaText(.running(since: t0), now: t0.addingTimeInterval(6.4)) == "Running · 6 s", "meta running")
+precondition(metaText(.done(14.2), now: t0) == "Done in 14 s" && metaText(.failed("exit 1"), now: t0) == "Failed · exit 1" && metaText(.stopped, now: t0) == "Stopped", "meta end states")
+precondition(statusWord(.idle) == nil && statusWord(.running(since: t0))?.0 == "WORKING" && statusWord(.failed("x"))! == ("FAILED", .red), "status words")
+precondition(phaseAfter(exit: .code(0), stopped: false, events: [.result("ok", isError: false)], duration: 3) == .done(3), "done")
+precondition(phaseAfter(exit: .code(0), stopped: false, events: [.result("no", isError: true)], duration: 3) == .failed("error"), "error result")
+precondition(phaseAfter(exit: .code(3), stopped: false, events: [.text("hi")], duration: 3) == .failed("exit 3"), "no result")
+precondition(phaseAfter(exit: .signal(9), stopped: false, events: [], duration: 3) == .failed("signal 9"), "killed")
+precondition(phaseAfter(exit: .signal(15), stopped: true, events: [], duration: 3) == .stopped, "stopped wins")
+precondition(promptTitle("log 2h to https://trello.com/c/AbC123 from 09:00 please") == "log 2h to https://trello.com/c/AbC123 fr…", "title: \(promptTitle("log 2h to https://trello.com/c/AbC123 from 09:00 please"))")
+precondition(promptTitle("  what\ndid I log  ") == "what did I log", "title squashes whitespace")
+
 print("tray selftest ok")
 exit(0)
 #endif

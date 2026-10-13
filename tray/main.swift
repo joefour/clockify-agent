@@ -163,6 +163,143 @@ func trayLine(cpu: Double?, mem m: UInt64) -> String { "Tray: CPU \(pctText(cpu)
 /// The cells of one expanded process row: pid, CPU, memory, name.
 func procCells(_ p: ProcStat) -> [String] { ["\(p.pid)", pctText(p.cpu), mem(p.mem), p.name] }
 
+// MARK: - Running claude
+
+/// How a process ended: exited with a status, or was killed by a signal.
+enum Exit: Equatable {
+    case code(Int32)
+    case signal(Int32)
+
+    /// Decodes a waitpid status (Swift has no WIFEXITED/WEXITSTATUS macros).
+    init(waitStatus s: Int32) {
+        self = s & 0x7f == 0 ? .code((s >> 8) & 0xff) : .signal(s & 0x7f)
+    }
+}
+
+/// One headless run in its own process group, so Stop reaches claude and every
+/// child it started. stdout is split into lines and parsed; stderr goes to the
+/// log and its last 20 lines are kept. Callbacks run on the main queue.
+final class Run {
+    let pid: pid_t
+    let started = Date()
+    private(set) var stderrTail: [String] = []
+    private(set) var stopped = false
+    private(set) var exited = false
+    var onEvents: ([Event]) -> Void = { _ in }
+    var onExit: (Exit) -> Void = { _ in }
+    private let out = Pipe(), err = Pipe()
+    private var pending = Data(), errPending = Data()
+    private var exitStatus: Exit?, outDone = false
+    private var watch: DispatchSourceProcess?
+
+    /// Throws the errno posix_spawnp returned (ENOENT: no such program on PATH).
+    init(exe: String, args: [String], cwd: String) throws {
+        var fa: posix_spawn_file_actions_t?
+        var attr: posix_spawnattr_t?
+        posix_spawn_file_actions_init(&fa)
+        posix_spawnattr_init(&attr)
+        defer {
+            posix_spawn_file_actions_destroy(&fa)
+            posix_spawnattr_destroy(&attr)
+        }
+        posix_spawn_file_actions_addopen(&fa, 0, "/dev/null", O_RDONLY, 0)
+        posix_spawn_file_actions_adddup2(&fa, out.fileHandleForWriting.fileDescriptor, 1)
+        posix_spawn_file_actions_adddup2(&fa, err.fileHandleForWriting.fileDescriptor, 2)
+        posix_spawn_file_actions_addchdir(&fa, cwd)
+        // Own group (pgid = pid) for Stop; CLOEXEC_DEFAULT keeps the tray's other fds out of the child.
+        posix_spawnattr_setflags(&attr, Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT))
+        posix_spawnattr_setpgroup(&attr, 0)
+        var pid: pid_t = 0
+        let argv: [UnsafeMutablePointer<CChar>?] = ([exe] + args).map { strdup($0) } + [nil]
+        defer { argv.forEach { free($0) } }
+        let rc = posix_spawnp(&pid, exe, &fa, &attr, argv, environ)
+        // The child has its copies; without closing ours, the reads never see EOF.
+        try? out.fileHandleForWriting.close()
+        try? err.fileHandleForWriting.close()
+        guard rc == 0 else { throw POSIXError(POSIXErrorCode(rawValue: rc) ?? .EIO) }
+        self.pid = pid
+        out.fileHandleForReading.readabilityHandler = { [weak self] h in
+            let d = h.availableData
+            DispatchQueue.main.async { self?.stdout(d) }
+        }
+        err.fileHandleForReading.readabilityHandler = { [weak self] h in
+            let d = h.availableData
+            if !d.isEmpty { FileHandle.standardError.write(d) }
+            DispatchQueue.main.async { self?.stderr(d) }
+        }
+        let src = DispatchSource.makeProcessSource(identifier: pid, eventMask: .exit, queue: .main)
+        src.setEventHandler { [weak self] in
+            var status: Int32 = 0
+            waitpid(pid, &status, 0)
+            self?.exited(Exit(waitStatus: status))
+        }
+        src.resume()
+        watch = src
+    }
+
+    /// SIGTERM to the whole group, SIGKILL 3 s later for anything still in it.
+    func stop() {
+        guard !exited else { return }
+        stopped = true
+        kill(-pid, SIGTERM)
+        let pg = pid
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { kill(-pg, SIGKILL) }
+    }
+
+    private func stdout(_ d: Data) {
+        if d.isEmpty {
+            out.fileHandleForReading.readabilityHandler = nil
+            if !pending.isEmpty { emit(pending[...]) }
+            pending = Data()
+            outDone = true
+            finish()
+            return
+        }
+        pending.append(d)
+        while let nl = pending.firstIndex(of: 0x0a) {
+            emit(pending[pending.startIndex..<nl])
+            pending = pending[(nl + 1)...]
+        }
+        pending = Data(pending)     // re-base, so indices start at 0 again
+    }
+
+    private func emit(_ line: Data) {
+        let ev = parseEvents(Substring(decoding: line, as: UTF8.self))
+        if !ev.isEmpty { onEvents(ev) }
+    }
+
+    private func stderr(_ d: Data) {
+        if d.isEmpty { err.fileHandleForReading.readabilityHandler = nil; return }
+        errPending.append(d)
+        let lines = String(decoding: errPending, as: UTF8.self).split(separator: "\n", omittingEmptySubsequences: false)
+        errPending = Data(lines.last.map { String($0) }?.utf8 ?? "".utf8)
+        stderrTail = Array((stderrTail + lines.dropLast().map(String.init).filter { !$0.isEmpty }).suffix(20))
+    }
+
+    private func exited(_ e: Exit) {
+        watch?.cancel()
+        watch = nil
+        exitStatus = e
+        exited = true
+        kill(-pid, SIGTERM)     // children claude left behind (an MCP server, a background job)
+        // stdout normally hits EOF right away; don't wait on a straggler holding it open.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+            guard let self, !outDone else { return }
+            outDone = true
+            out.fileHandleForReading.readabilityHandler = nil
+            finish()
+        }
+        finish()
+    }
+
+    private func finish() {
+        guard outDone, let e = exitStatus else { return }
+        if !errPending.isEmpty { stderrTail = Array((stderrTail + [String(decoding: errPending, as: UTF8.self)]).suffix(20)); errPending = Data() }
+        exitStatus = nil      // once
+        onExit(e)
+    }
+}
+
 #if SELFTEST
 // claudeArgs
 let a = claudeArgs(prompt: "--help me log 2h", repo: "/r")
@@ -227,6 +364,63 @@ precondition(trayLine(cpu: 0, mem: 14_680_064) == "Tray: CPU 0.0% · 14 MB", "tr
 precondition(procCells(ps[2]) == ["51290", "1.1%", "7.0 MB", "clockify"], "cells: \(procCells(ps[2]))")
 precondition(children(of: getpid()).isEmpty && children(of: -1).isEmpty, "children: none yet")
 precondition(ProcessInfo.processInfo.processName.hasPrefix(procName(getpid())) && procName(-1) == "?", "procName: \(procName(getpid()))")
+/// Spins the main run loop until cond holds or timeout passes.
+func waitUntil(_ timeout: TimeInterval, _ cond: () -> Bool) -> Bool {
+    let end = Date().addingTimeInterval(timeout)
+    while !cond() && Date() < end { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
+    return cond()
+}
+
+// Run: stream-json on stdout in two chunks across a line break, stderr kept, exit code.
+var got: [Event] = [], ended: Exit?
+let script = "printf '%s\\n' '\(textLine)'; printf '%s' '\(okLine.prefix(30))'; sleep 0.1; printf '%s\\n' '\(okLine.dropFirst(30))'; echo oops >&2; exit 3"
+let r1 = try! Run(exe: "/bin/sh", args: ["-c", script], cwd: "/tmp")
+r1.onEvents = { got += $0 }
+r1.onExit = { ended = $0 }
+precondition(waitUntil(5) { ended != nil }, "run ends")
+precondition(got == [.text("Total today: 0:00."), .result("Total today: 0:00.", isError: false)], "events: \(got)")
+precondition(ended == .code(3) && r1.stderrTail == ["oops"], "exit \(String(describing: ended)) stderr \(r1.stderrTail)")
+
+// Run: cwd is applied.
+var pwdOut: [Event] = [], pwdEnd: Exit?
+let r2 = try! Run(exe: "/bin/sh", args: ["-c", #"printf '{"type":"result","is_error":false,"result":"%s"}\n' "$(pwd -P)""#], cwd: "/private/tmp")
+r2.onEvents = { pwdOut += $0 }
+r2.onExit = { pwdEnd = $0 }
+precondition(waitUntil(5) { pwdEnd != nil } && pwdOut == [.result("/private/tmp", isError: false)], "cwd: \(pwdOut)")
+
+// Run: Stop ends the whole group, children included.
+var stopEnd: Exit?
+let r3 = try! Run(exe: "/bin/sh", args: ["-c", "sleep 30 & sleep 30"], cwd: "/tmp")
+r3.onExit = { stopEnd = $0 }
+precondition(waitUntil(2) { children(of: r3.pid).count == 2 }, "two sleeps started: \(children(of: r3.pid))")
+r3.stop()
+precondition(waitUntil(5) { stopEnd != nil } && r3.stopped, "stop ends the run")
+precondition(waitUntil(5) { kill(-r3.pid, 0) == -1 && errno == ESRCH }, "no process left in the group")
+
+// Run: a background child holding stdout open doesn't keep the run going.
+var holdEnd: Exit?, holdEvents: [Event] = []
+let r4 = try! Run(exe: "/bin/sh", args: ["-c", "sleep 30 & printf '%s\\n' '\(okLine)'; exit 0"], cwd: "/tmp")
+r4.onEvents = { holdEvents += $0 }
+r4.onExit = { holdEnd = $0 }
+precondition(waitUntil(2.5) { holdEnd != nil } && holdEnd == .code(0) && holdEvents.count == 1, "straggler: \(String(describing: holdEnd)) \(holdEvents)")
+precondition(waitUntil(2) { kill(-r4.pid, 0) == -1 }, "straggler killed with the group")
+
+// Run: an odd prompt reaches the program as one verbatim argv element (Review Focus 4).
+let echoFile = NSTemporaryDirectory() + "ck-argv-\(getpid())"
+var echoEnd: Exit?
+let r5 = try! Run(exe: "/bin/sh", args: ["-c", #"printf %s "$1" > "$2""#, "sh", odd, echoFile], cwd: "/tmp")
+r5.onExit = { echoEnd = $0 }
+precondition(waitUntil(5) { echoEnd != nil } && (try? String(contentsOfFile: echoFile, encoding: .utf8)) == odd, "argv verbatim")
+try? FileManager.default.removeItem(atPath: echoFile)
+
+// Run: a missing program throws ENOENT.
+do {
+    _ = try Run(exe: "no-such-claude-binary", args: [], cwd: "/tmp")
+    preconditionFailure("missing program must throw")
+} catch let e as POSIXError {
+    precondition(e.code == .ENOENT, "ENOENT: \(e)")
+}
+
 print("tray selftest ok")
 exit(0)
 #endif

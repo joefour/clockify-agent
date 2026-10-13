@@ -25,10 +25,10 @@ A menu bar app for clockify-agent. Clicking its icon opens a panel with a prompt
 
 `bypassPermissions` lets Claude run any command as the user with no confirm step: a misread prompt can create a wrong Clockify entry, or worse. Mitigations kept small on purpose:
 
-- Only the panel starts a run. Trello card text that Claude reads through the trello MCP (titles, descriptions, comments) also reaches it, so a card written to inject instructions is the main path to an unwanted command. Treat card text as untrusted.
-- `--tools Bash,Read,Skill` and `--strict-mcp-config` (trello only) limit what a run can reach.
-- `--append-system-prompt` scopes runs to time tracking (below).
-- The log records every prompt, every Bash command and the exit code.
+- Only the panel starts a run. Trello card text also reaches Claude: titles, descriptions and comments it reads through the trello MCP, and card titles that come back in `clockify log` output. Treat card text as untrusted. A card written to inject instructions could make a run execute commands, write to Trello (the MCP's comment, card-edit and card-create tools), or upload a local file with its `add_attachment` (for example `~/.config/clockify-agent/config.yaml`, which holds the Clockify API key).
+- `--tools Bash,Read,Skill` and `--strict-mcp-config` (trello only) limit which tools load, not what they reach: Bash runs as the user with full file and network access.
+- `--append-system-prompt` asks runs to stick to time tracking (below). It is guidance, not enforcement, and injected text can override it.
+- The log records every prompt, every Bash command and the exit code. MCP tool calls (Trello reads and writes) are not logged or shown in the panel.
 
 ## Claude invocation
 

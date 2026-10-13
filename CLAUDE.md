@@ -2,36 +2,37 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## clockify-agent (`clockify-agent/`)
+## clockify CLI
 
-CLI for logging time entries and viewing summaries from Clockify.
+CLI for logging time entries and viewing summaries from Clockify. Rust, one crate at the repo root; the binary is `clockify`.
 
-- **Build**: `cd clockify-agent && go build -o clockify .`
-- **Test**: `cd clockify-agent && go test ./...`
-- **Single test**: `cd clockify-agent && go test ./internal/validator/ -run TestHasOverlap`
-- **Config**: `~/.config/clockify-agent/config.yaml` (TOML), overridden by env vars. Also reads from RMS Clockify and Trello `.env` files (hardcoded paths in `internal/config/config.go`).
+- **Build**: `make build` (`cargo build --release`, binary at `target/release/clockify`)
+- **Test**: `cargo test`
+- **Single test**: `cargo test validator::tests::overlap_skips_running_timer`
+- **Lint**: `cargo clippy --all-targets -- -D warnings`
+- **Config**: `~/.config/clockify-agent/config.yaml` (TOML despite the name), overridden by env vars. Also reads the RMS Clockify and Trello `.env` files (hardcoded paths in `src/config.rs`).
 
 Architecture:
-- `main.go` — CLI entry point with `log` and `summary` subcommands
-- `internal/clockify/` — Clockify API client (POST time entries, GET detailed reports)
-- `internal/config/` — Layered config: RMS .env → user TOML → env vars → save back to TOML
-- `internal/summary/` — Aggregates time entries by project/task for date ranges
-- `internal/trello/` — Calls `trello-agent meta` to resolve card URLs → board/project info for Clockify project mapping
-- `internal/timeutil/` — Duration parsing (flexible format: "2h30m", "1.5h", "45m")
-- `internal/validator/` — Daily 14h cap check and time overlap detection before creating entries
+- `src/main.rs`: clap CLI with `log` and `summary`; log argument modes, entry time math (VNT input, UTC output), task lookup, output
+- `src/clockify.rs`: Clockify API client over ureq: time entries, projects, tasks, detailed report
+- `src/config.rs`: layered config, RMS .env, then user TOML, then env vars
+- `src/summary.rs`: date range presets, totals by project and task
+- `src/trello.rs`: `trello-agent meta` for the card title, Trello REST for the board id and name, `trello card` fallback
+- `src/timeutil.rs`: duration, time and date parsing ("2h30m", "1:30", "09:00", "4h ago") and H:MM:SS formatting
+- `src/validator.rs`: daily 14h cap and overlap checks
 
 ## Patterns
 
-- All Go projects use standard library `testing` package — no external test frameworks
+- Tests live in an inline `#[cfg(test)] mod tests` in each module; HTTP tests run against a `mockito` server
 - Config is TOML with env var override pattern (env vars take highest priority)
-- `internal/` packages have corresponding `*_test.go` files in the same package
-- API clients use `net/http` directly, no third-party HTTP libraries
+- HTTP is blocking ureq; no async runtime
+- Clockify JSON fields can be `null`: response structs use `null_default` from `src/clockify.rs`
 
 ## Tray (`tray/`)
 
 Menu bar app "Clockify Agent". Click the clock and type a prompt; Send runs headless Claude Code (`claude -p`, `claude-sonnet-5-5`, `--permission-mode bypassPermissions`) in this repo, and the reply streams into the panel. The footer shows the CPU and memory of the run's process tree and of the tray itself.
 
-- **Test**: `make tray-test` (pure parts and the process runner, behind `-D SELFTEST`); `make check` also runs `go test ./...`
+- **Test**: `make tray-test` (pure parts and the process runner, behind `-D SELFTEST`); `make check` also runs `cargo test`
 - **Build**: `make app` builds `build/Clockify Agent.app`
 - **Install**: `make install` from this checkout: the LaunchAgent's `--repo` is the directory it runs in. It installs `~/.local/bin/clockify`, `~/Applications/Clockify Agent.app` and the login item `com.clockifyagent.tray`. Remove: `make uninstall`.
 - **Log**: `~/Library/Logs/clockify-agent-tray.log` (prompts, Bash commands, exit codes, claude's stderr)

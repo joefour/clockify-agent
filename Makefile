@@ -1,4 +1,4 @@
-CLI         := clockify
+CLI         := target/release/clockify
 TRAY        := clockify-agent-tray
 SWIFT_SRC   := $(wildcard tray/*.swift)
 SELFTEST    := $(or $(TMPDIR),/tmp)/$(TRAY)-selftest
@@ -20,10 +20,10 @@ stop-agent = launchctl bootout gui/$$(id -u)/$(AGENT) 2>/dev/null; while launchc
 .PHONY: build test tray-test app check install uninstall
 
 build: ## compile the CLI
-	go build -o $(CLI) .
+	cargo build --release
 
-test: ## Go unit tests
-	go test ./...
+test: ## Rust unit tests
+	cargo test
 
 # No XCTest target; the tray's pure parts and its process runner are checked behind -D SELFTEST, as in gws-mcp and claude-usage.
 tray-test: ## check the tray's parsing, formatting, process tree and runner

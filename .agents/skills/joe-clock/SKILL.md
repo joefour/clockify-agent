@@ -13,7 +13,7 @@ Clockify time-tracking helper. Log entries, view summaries, and resolve format q
 
 If missing, rebuild from source:
 ```bash
-cd ~/Projects/ai-agents/clockify-agent && go build -o ~/.local/bin/clockify ./main.go
+cd /Users/loithai/Projects/ai-tools/clockify-agent && make install
 ```
 
 Verify:
@@ -216,7 +216,7 @@ Project total today: <project-name> (4:30)
 ### "Command not found"
 ```bash
 # Reinstall
-cd ~/Projects/ai-agents/clockify-agent && go build -o ~/.local/bin/clockify ./main.go
+cd /Users/loithai/Projects/ai-tools/clockify-agent && make install
 ```
 
 ### "failed to fetch card info"
@@ -229,7 +229,7 @@ Add board→project mapping in `~/.config/clockify-agent/config.yaml`.
 Pick a non-overlapping interval, or use `--date YYYY-MM-DD` for a different day.
 
 ### "exceeds 14h limit"
-Cap is per day in VNT. If you really need to override, edit `internal/validator/daily.go` (`MaxDailySeconds`) and rebuild.
+Cap is per day in VNT. If you really need to override, edit `src/validator.rs` (`MAX_DAILY_SECONDS`) and rebuild.
 
 ### "Clockify API error: 401"
 API key invalid/expired. Update `CLOCKIFY_API_KEY` env var or `api_key` in config.
@@ -250,7 +250,7 @@ For those, use other tools/skills.
 ## Build & test
 
 ```bash
-cd ~/Projects/ai-agents/clockify-agent
-go build -o ~/.local/bin/clockify ./main.go
-go test ./...
+cd /Users/loithai/Projects/ai-tools/clockify-agent
+make install
+cargo test
 ```

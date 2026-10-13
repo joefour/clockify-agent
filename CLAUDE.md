@@ -42,4 +42,4 @@ Architecture:
 
 Footprint rules: plain AppKit (no SwiftUI, no NSPopover); no timers while the panel is closed; stats every 2 s only while it shows; reply capped at 64 KB. Measured idle with the panel closed: about 17 MB, 0.0% CPU.
 
-Runs bypass permissions: Claude runs commands without asking. Only text typed into the panel reaches it.
+Runs bypass permissions: Claude runs commands without asking. Only the panel starts a run, but Trello card text that Claude reads through the trello MCP (titles, descriptions, comments) also reaches it, so a card written to inject instructions could make it run commands. Treat card text as untrusted.

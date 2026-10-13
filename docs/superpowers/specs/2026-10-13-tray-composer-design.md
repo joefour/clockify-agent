@@ -25,7 +25,7 @@ A menu bar app for clockify-agent. Clicking its icon opens a panel with a prompt
 
 `bypassPermissions` lets Claude run any command as the user with no confirm step: a misread prompt can create a wrong Clockify entry, or worse. Mitigations kept small on purpose:
 
-- Only text typed into the panel reaches Claude; nothing else feeds prompts.
+- Only the panel starts a run. Trello card text that Claude reads through the trello MCP (titles, descriptions, comments) also reaches it, so a card written to inject instructions is the main path to an unwanted command. Treat card text as untrusted.
 - `--tools Bash,Read,Skill` and `--strict-mcp-config` (trello only) limit what a run can reach.
 - `--append-system-prompt` scopes runs to time tracking (below).
 - The log records every prompt, every Bash command and the exit code.

@@ -68,7 +68,7 @@ final class PanelModel {
     var procsOpen = false { didSet { changed() } }
     var claude: [ProcStat]?                              // the run's process tree; Tray calls statsChanged after sampling
     var tray = ""
-    var cap: CGFloat = 400                               // tallest the reply may be; Tray sets it from the screen
+    var cap: CGFloat = 400                               // tallest the whole panel may be; Tray sets it from the screen
     // Set by PanelController.
     var changed: () -> Void = {}
     var replyChanged: () -> Void = {}
@@ -355,7 +355,7 @@ func txtBtn(_ p: Pal, _ title: String, _ w: W, color: NSColor? = nil, pad: (CGFl
 
 /// The panel's content. A state change rebuilds it; reply text and stats update in
 /// place. The prompt and reply text views are made once and moved into each rebuild,
-/// so typed text, selection and scroll survive.
+/// so typed text survives.
 final class PanelController: NSViewController, NSTextViewDelegate {
     let m: PanelModel
     private var queued = false, replyQueued = false
@@ -494,9 +494,11 @@ final class PanelController: NSViewController, NSTextViewDelegate {
         prompt.font = hvFont(15)
         prompt.textColor = p.ink
         prompt.insertionPointColor = p.ink
-        // NSTextView draws this while empty; the key is long-standing but not public API.
-        prompt.setValue(NSAttributedString(string: "Log 2h to a Trello card, or ask “what did I log this week?”",
-                                           attributes: [.font: hvFont(15), .foregroundColor: p.muted]), forKey: "placeholderAttributedString")
+        // NSTextView draws this while empty; the key is long-standing but not public API, so check it first.
+        if prompt.responds(to: NSSelectorFromString("setPlaceholderAttributedString:")) {
+            prompt.setValue(NSAttributedString(string: "Log 2h to a Trello card, or ask “what did I log this week?”",
+                                               attributes: [.font: hvFont(15), .foregroundColor: p.muted]), forKey: "placeholderAttributedString")
+        }
         let action: Press
         if running {
             action = btn(.outline, p, "Stop", spin: true) { [unowned self] in m.onStop() }
@@ -558,13 +560,21 @@ final class PanelController: NSViewController, NSTextViewDelegate {
 
     func flushReply() {
         replyQueued = false
-        guard col != nil, let lm = reply.layoutManager, let tc = reply.textContainer else { return }
+        guard col != nil else { return }
         reply.textStorage?.setAttributedString(replyText())
+        fitReply()
+        reply.scrollToEndOfDocument(nil)
+    }
+
+    /// Sizes the reply to its text, within the room the rest of the panel leaves under `m.cap`.
+    func fitReply() {
+        guard let col, let lm = reply.layoutManager, let tc = reply.textContainer else { return }
+        col.layoutSubtreeIfNeeded()     // the reply needs its width before its text can be measured
         lm.ensureLayout(for: tc)
         let h = ceil(lm.usedRect(for: tc).height)
-        replyHeight.constant = min(max(h, 18), max(m.cap, 120))
-        replyScroll.hasVerticalScroller = h > m.cap
-        reply.scrollToEndOfDocument(nil)
+        let room = max(m.cap - (col.fittingSize.height - replyHeight.constant), 18)
+        replyHeight.constant = min(max(h, 18), room)
+        replyScroll.hasVerticalScroller = h > room
         m.onResize()
     }
 
@@ -618,7 +628,7 @@ final class PanelController: NSViewController, NSTextViewDelegate {
         if let rows = procRows {
             rows.arrangedSubviews.forEach { $0.removeFromSuperview() }
             procRowViews().forEach { rows.addArrangedSubview($0) }
-            m.onResize()
+            fitReply()      // more rows leave less room for the reply
         }
     }
 }

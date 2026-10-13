@@ -4,6 +4,7 @@ mod clockify;
 mod config;
 mod summary;
 mod timeutil;
+mod trello;
 mod validator;
 
 fn main() {}

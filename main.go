@@ -462,7 +462,7 @@ func runLog(args []string, dateStr string, dryRun bool, projectIDOverride, taskI
 		if overlap && conflictingEntry != nil {
 			entryStart := parseTimeEntryTime(conflictingEntry.TimeInterval.Start)
 			entryEnd := parseTimeEntryTime(conflictingEntry.TimeInterval.End)
-			return fmt.Errorf("Entry overlaps with existing entry %s (%s - %s)", conflictingEntry.Name, entryStart.Format("15:04"), entryEnd.Format("15:04"))
+			return fmt.Errorf("Entry overlaps with existing entry %s (%s - %s)", conflictingEntryLabel(conflictingEntry), entryStart.Format("15:04"), entryEnd.Format("15:04"))
 		}
 
 		// Check 14h cap
@@ -518,7 +518,7 @@ func runLog(args []string, dateStr string, dryRun bool, projectIDOverride, taskI
 
 	fmt.Println("Created time entry:")
 	if cardInfo.CardNumber != "" {
-		fmt.Printf("  Card:        %s\n", result.Name)
+		fmt.Printf("  Card:        %s\n", cardInfo.CardNumber)
 	} else {
 		fmt.Printf("  Description: %s\n", result.Description)
 	}
@@ -644,6 +644,19 @@ func printProjectTotalToday(client *clockify.Client, projectID string) error {
 	// Project not found in entries yet (might be the only entry today)
 	fmt.Printf("Project total today: %s (0:00)\n", projectName)
 	return nil
+}
+
+// conflictingEntryLabel identifies an entry for error messages. Clockify's
+// time-entries API has no "name" field (TimeEntry.Name is never populated),
+// so fall back to the task name or description instead.
+func conflictingEntryLabel(e *clockify.TimeEntry) string {
+	if e.Task != nil && e.Task.Name != "" {
+		return e.Task.Name
+	}
+	if e.Description != "" {
+		return e.Description
+	}
+	return "(untitled)"
 }
 
 func parseTimeEntryTime(s string) time.Time {

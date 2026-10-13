@@ -2,5 +2,6 @@
 
 mod clockify;
 mod timeutil;
+mod validator;
 
 fn main() {}

@@ -4,3 +4,6 @@
 /clockify
 build/
 *.plist.tmp
+
+# cargo build output
+/target

@@ -24,7 +24,7 @@ pub fn exceeds_cap(existing_seconds: i64, new_seconds: i64) -> bool {
 
 /// The first entry that overlaps [start, end]. Entries that only touch at an endpoint
 /// don't overlap; entries without a parseable start and end are skipped.
-pub fn has_overlap<'a>(start: DateTime<Utc>, end: DateTime<Utc>, entries: &'a [TimeEntry]) -> Option<&'a TimeEntry> {
+pub fn has_overlap(start: DateTime<Utc>, end: DateTime<Utc>, entries: &[TimeEntry]) -> Option<&TimeEntry> {
     entries
         .iter()
         .find(|e| e.interval().is_some_and(|(s, en)| start < en && end > s))

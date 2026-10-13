@@ -1,5 +1,3 @@
-#![allow(dead_code)] // Task 8 removes this once the CLI uses every module.
-
 mod clockify;
 mod config;
 mod summary;
@@ -8,9 +6,65 @@ mod trello;
 mod validator;
 
 use anyhow::{Context, Result, bail};
-use chrono::{DateTime, FixedOffset, NaiveDate, NaiveTime, TimeDelta, Timelike, Utc};
+use chrono::{DateTime, FixedOffset, Local, NaiveDate, NaiveTime, SecondsFormat, TimeDelta, Timelike, Utc};
+use clap::{Parser, Subcommand};
 
-use crate::clockify::Client;
+use crate::clockify::{Client, TimeEntry, TimeEntryRequest};
+use crate::config::Config;
+
+#[derive(Parser)]
+#[command(name = "clockify", about = "Log Clockify time entries and view summaries")]
+struct Cli {
+    #[command(subcommand)]
+    command: Cmd,
+}
+
+#[derive(Subcommand)]
+enum Cmd {
+    /// Log a time entry against a Trello card, or a description with --project-id
+    #[command(override_usage = "clockify log [card-url] <duration>
+       clockify log [card-url] <start> <end>
+       clockify log [card-url] <start> <duration>
+       clockify log [card-url] \"<N> ago\" <duration>
+       clockify log --description \"text\" <duration>
+       clockify log --description \"text\" <start> <duration>")]
+    Log {
+        /// [card-url] then <duration>, <start> <end>, <start> <duration>, or "<N> ago" <duration>
+        #[arg(value_name = "ARGS")]
+        args: Vec<String>,
+        /// Date for the entry (default: today)
+        #[arg(long, value_name = "YYYY-MM-DD")]
+        date: Option<String>,
+        /// Print entry details without creating
+        #[arg(long)]
+        dry_run: bool,
+        /// Override default project ID (required with --description)
+        #[arg(long, value_name = "ID")]
+        project_id: Option<String>,
+        /// Task ID for the entry
+        #[arg(long, value_name = "ID")]
+        task_id: Option<String>,
+        /// Description for entry (use instead of card URL)
+        #[arg(long, value_name = "TEXT")]
+        description: Option<String>,
+    },
+    /// Show logged time per project for a preset or a date range
+    #[command(override_usage = "clockify summary <preset>
+       clockify summary --from YYYY-MM-DD --to YYYY-MM-DD")]
+    Summary {
+        /// today, yesterday, this-week, last-week, this-month, last-month
+        preset: Option<String>,
+        /// Show per-task breakdown within each project
+        #[arg(long)]
+        by_task: bool,
+        /// Start date (required if no preset)
+        #[arg(long, value_name = "YYYY-MM-DD")]
+        from: Option<String>,
+        /// End date (required if no preset)
+        #[arg(long, value_name = "YYYY-MM-DD")]
+        to: Option<String>,
+    },
+}
 
 /// How the log command's positional arguments set the entry's time. Times of day are
 /// seconds from midnight in VNT; durations are seconds.
@@ -149,11 +203,265 @@ fn entry_name(card_number: &str, description: &str) -> String {
     }
 }
 
-fn main() {}
+fn main() {
+    let result = match Cli::parse().command {
+        Cmd::Log { args, date, dry_run, project_id, task_id, description } => run_log(
+            &args,
+            date.as_deref().unwrap_or(""),
+            dry_run,
+            project_id.as_deref().unwrap_or(""),
+            task_id.as_deref().unwrap_or(""),
+            description.as_deref().unwrap_or(""),
+        ),
+        Cmd::Summary { preset, by_task, from, to } => run_summary(
+            preset.as_deref().unwrap_or(""),
+            from.as_deref().unwrap_or(""),
+            to.as_deref().unwrap_or(""),
+            by_task,
+        ),
+    };
+    if let Err(e) = result {
+        eprintln!("Error: {e:#}");
+        std::process::exit(1);
+    }
+}
+
+fn run_log(
+    args: &[String],
+    date: &str,
+    dry_run: bool,
+    project_id_override: &str,
+    task_id: &str,
+    description: &str,
+) -> Result<()> {
+    let parsed = parse_log_args(args, description)?;
+    let mode = parsed.mode.with_extra(random_percent());
+
+    let explicit_date = !date.is_empty();
+    let date_str = if explicit_date { date.to_string() } else { Local::now().format("%Y-%m-%d").to_string() };
+    let day = timeutil::parse_date(&date_str).context("invalid date format")?;
+
+    let cfg = config::load();
+    let card = match &parsed.card_url {
+        Some(url) => trello::fetch_card(url, &cfg.trello_api_key, &cfg.trello_token).context("failed to fetch card info")?,
+        None => trello::CardInfo { title: description.to_string(), ..Default::default() },
+    };
+
+    let now = Utc::now().with_nanosecond(0).unwrap_or_else(Utc::now);
+    let (start, end) = entry_times(&mode, day, explicit_date, now);
+    let duration = (end - start).num_seconds();
+
+    let mut project_id = project_id_override.to_string();
+    if project_id.is_empty() && parsed.card_url.is_some() {
+        project_id = cfg.get_clockify_project_id(&card.board_id, &card.board_name);
+    }
+    if project_id.is_empty() && description.is_empty() {
+        bail!("no project ID found (configure board-to-project mapping in config or use --project-id)");
+    }
+    if project_id.is_empty() {
+        bail!("--project-id is required when using --description without a card URL");
+    }
+
+    let client = Client::new(&cfg.api_key, &cfg.workspace_id);
+
+    // A task is tied to a card number, so only card entries look one up.
+    let task_name = format!("#{}", card.card_number);
+    let task = if !task_id.is_empty() {
+        Some(task_id.to_string())
+    } else if parsed.card_url.is_some() {
+        resolve_task(&client, &project_id, &task_name, dry_run)?
+    } else {
+        None
+    };
+
+    match client.entries_between(&cfg.user_id, &date_str, &date_str) {
+        Ok(entries) => {
+            if let Some(c) = validator::has_overlap(start, end, &entries) {
+                let (cs, ce) = c.interval().expect("has_overlap only returns entries with an interval");
+                bail!(
+                    "Entry overlaps with existing entry {} ({} - {})",
+                    conflicting_entry_label(c),
+                    cs.format("%H:%M"),
+                    ce.format("%H:%M")
+                );
+            }
+            let existing = validator::daily_total(start, &entries);
+            if validator::exceeds_cap(existing, duration) {
+                bail!(
+                    "Total time for {date_str} would be {:.1}h (exceeds 14h limit)",
+                    (existing + duration) as f64 / 3600.0
+                );
+            }
+        }
+        Err(e) => {
+            eprintln!("Warning: Could not fetch existing entries for overlap check: {e:#}");
+            eprintln!("Proceeding without overlap validation.");
+        }
+    }
+
+    let rfc3339 = |t: DateTime<Utc>| t.to_rfc3339_opts(SecondsFormat::Secs, true);
+
+    if dry_run {
+        println!("Would create time entry:");
+        if card.card_number.is_empty() {
+            println!("  Card:        (no ticket)");
+        } else {
+            println!("  Card:        {}", card.card_number);
+        }
+        println!("  Description: {}", card.title);
+        println!("  Start:       {}", rfc3339(start));
+        println!("  End:         {}", rfc3339(end));
+        println!("  Duration:    {}", timeutil::format_duration(duration));
+        println!("  Project:     {project_id}");
+        match &task {
+            Some(id) => println!("  Task:        {id}"),
+            None if parsed.card_url.is_some() => println!("  Task:        (would create {task_name})"),
+            None => {}
+        }
+        return Ok(());
+    }
+
+    let request = TimeEntryRequest {
+        project_id: project_id.clone(),
+        task_id: task.unwrap_or_default(),
+        name: entry_name(&card.card_number, description),
+        description: card.title.clone(),
+        start: rfc3339(start),
+        end: rfc3339(end),
+        billable: true,
+    };
+    let result = client.create_entry(&request).context("Clockify API error")?;
+
+    println!("Created time entry:");
+    if card.card_number.is_empty() {
+        println!("  Description: {}", result.description);
+    } else {
+        println!("  Card:        {}", card.card_number);
+    }
+    println!("  Start:       {}", result.time_interval.start);
+    println!("  End:         {}", result.time_interval.end);
+    println!("  Duration:    {}", timeutil::format_duration(duration));
+    println!("  Project:     {}", result.project_id);
+    if !result.task_id.is_empty() {
+        println!("  Task:        {}", result.task_id);
+    }
+    println!(
+        "  Link:       https://app.clockify.me/workspaces/{}/time-entries/{}",
+        client.workspace_id(),
+        result.id
+    );
+
+    println!();
+    if let Err(e) = print_project_total_today(&client, &cfg, &result.project_id) {
+        eprintln!("Warning: Could not fetch project total: {e:#}");
+    }
+    Ok(())
+}
+
+fn run_summary(preset: &str, from: &str, to: &str, by_task: bool) -> Result<()> {
+    let (start, end, label) = summary::resolve_date_range(preset, from, to)?;
+    let cfg = config::load();
+    let client = Client::new(&cfg.api_key, &cfg.workspace_id);
+    let entries = client.entries_between(&cfg.user_id, &start, &end).context("Clockify API error")?;
+    let projects = client.list_projects().context("Clockify API error")?;
+
+    println!("Summary: {label}\n");
+    let mut grand_total = 0;
+    if by_task {
+        for p in summary::compute_task_breakdown(&entries, &projects) {
+            println!("{:<35} {}", p.name, timeutil::format_duration(p.duration));
+            for t in &p.tasks {
+                println!("  {:<33} {}", t.name, timeutil::format_duration(t.duration));
+            }
+            grand_total += p.duration;
+            println!();
+        }
+    } else {
+        for p in summary::compute_project_totals(&entries, &projects) {
+            println!("{:<35} {}", p.name, timeutil::format_duration(p.duration));
+            grand_total += p.duration;
+        }
+    }
+    println!("{}", "\u{2500}".repeat(40));
+    println!("{:<35} {}", "Total", timeutil::format_duration(grand_total));
+    Ok(())
+}
+
+/// Prints today's total for the project the new entry went to.
+fn print_project_total_today(client: &Client, cfg: &Config, project_id: &str) -> Result<()> {
+    let today = Local::now().format("%Y-%m-%d").to_string();
+    let entries = client.entries_between(&cfg.user_id, &today, &today)?;
+    let projects = client.list_projects()?;
+    let totals = summary::compute_project_totals(&entries, &projects);
+    let name = projects.iter().find(|p| p.id == project_id).map_or(project_id, |p| p.name.as_str());
+    let total = totals.iter().find(|t| t.name == name || t.name == project_id).map_or(0, |t| t.duration);
+    println!("Project total today: {name} ({})", timeutil::format_duration(total));
+    Ok(())
+}
+
+/// Names an entry in error messages: its task, else its description. Clockify's
+/// time-entries API has no "name" field.
+fn conflicting_entry_label(e: &TimeEntry) -> &str {
+    match &e.task {
+        Some(t) if !t.name.is_empty() => t.name.as_str(),
+        _ if !e.description.is_empty() => e.description.as_str(),
+        _ => "(untitled)",
+    }
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use clap::{CommandFactory, Parser};
+
+    #[test]
+    fn cli_definition_is_valid() {
+        Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn flags_after_positionals() {
+        let cli = Cli::try_parse_from(["clockify", "log", CARD, "4h ago", "30m", "--date", "2026-06-27", "--dry-run"]).unwrap();
+        let Cmd::Log { args, date, dry_run, .. } = cli.command else { panic!("expected log") };
+        assert_eq!(args, vec![CARD, "4h ago", "30m"]);
+        assert_eq!(date.as_deref(), Some("2026-06-27"));
+        assert!(dry_run);
+    }
+
+    #[test]
+    fn description_flag_before_times() {
+        let cli = Cli::try_parse_from(["clockify", "log", "--description", "fix login", "--project-id", "p1", "2h"]).unwrap();
+        let Cmd::Log { args, description, project_id, .. } = cli.command else { panic!("expected log") };
+        assert_eq!(args, vec!["2h"]);
+        assert_eq!(description.as_deref(), Some("fix login"));
+        assert_eq!(project_id.as_deref(), Some("p1"));
+    }
+
+    #[test]
+    fn summary_flags() {
+        let cli = Cli::try_parse_from(["clockify", "summary", "--from", "2026-04-01", "--to", "2026-04-09", "--by-task"]).unwrap();
+        let Cmd::Summary { preset, by_task, from, to } = cli.command else { panic!("expected summary") };
+        assert_eq!(preset, None);
+        assert!(by_task);
+        assert_eq!((from.as_deref(), to.as_deref()), (Some("2026-04-01"), Some("2026-04-09")));
+    }
+
+    #[test]
+    fn unknown_and_single_dash_flags_are_rejected() {
+        assert!(Cli::try_parse_from(["clockify", "log", CARD, "2h", "--foo"]).is_err());
+        // Go accepted -date (fix 4).
+        assert!(Cli::try_parse_from(["clockify", "log", CARD, "2h", "-date", "2026-06-27"]).is_err());
+    }
+
+    #[test]
+    fn conflicting_entry_label_falls_back() {
+        let mut e = clockify::TimeEntry { description: "Standup".into(), ..Default::default() };
+        assert_eq!(conflicting_entry_label(&e), "Standup");
+        e.task = Some(clockify::TaskRef { name: "#12".into() });
+        assert_eq!(conflicting_entry_label(&e), "#12");
+        assert_eq!(conflicting_entry_label(&clockify::TimeEntry::default()), "(untitled)");
+    }
 
     const CARD: &str = "https://trello.com/c/abc/12-x";
 

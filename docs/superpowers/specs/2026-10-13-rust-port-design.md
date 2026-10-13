@@ -83,7 +83,6 @@ clockify summary [PRESET] [--by-task] [--from YYYY-MM-DD] [--to YYYY-MM-DD]
 - **HTTP:** 10 s timeout. A status of 400 or above returns `API error: status N`.
 
 Kept as is, though questionable:
-- Mode A with `--date` ends the entry at 00:00 of that date. This is the first follow-up after the port.
 - Overlap errors print the conflicting entry's times in UTC.
 
 ## Fixes
@@ -157,7 +156,7 @@ Expected differences:
 
 ## Follow-ups after the port
 
-- **Mode A with `--date` logs on the day before.** `clockify log <card> 2h --date 2026-10-12` ends at the midnight that starts Oct 12, so the entry is 22:00–24:00 on Oct 11. The overlap and 14h checks only look at Oct 12. The port keeps this behavior, and its `entry_times` test pins it. The fix changes that test. One option: end the entry at the current time of day on that date.
+- **Mode A with `--date` logs on the day before.** Done. `clockify log <card> 2h --date 2026-10-12` ended at the midnight that starts Oct 12, so the entry was 22:00–24:00 on Oct 11, outside the Oct 12 overlap and 14h checks. It now ends at the current VNT time of day on that date, as Mode A does without `--date`. The relative mode (`"4h ago"`) keeps its 00:00 anchor on an explicit `--date`.
 
 ## Out of scope
 

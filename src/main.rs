@@ -70,7 +70,7 @@ enum Cmd {
 /// seconds from midnight in VNT; durations are seconds.
 #[derive(Debug, PartialEq)]
 enum Mode {
-    /// A: ends now (or at 00:00 on an explicit --date) and lasts this long.
+    /// A: ends at the current time of day (on --date when given) and lasts this long.
     Duration(i64),
     /// B: start and end times of day.
     StartEnd(i64, i64),
@@ -150,7 +150,8 @@ fn vnt() -> FixedOffset {
 }
 
 /// Start and end of the entry. `date` is the entry's day (today unless --date was given)
-/// and `now` the current time; on an explicit --date, "now" means 00:00 VNT that day.
+/// and `now` the current time. For a relative start on an explicit --date, "now" means
+/// 00:00 VNT that day.
 fn entry_times(mode: &Mode, date: NaiveDate, explicit_date: bool, now: DateTime<Utc>) -> (DateTime<Utc>, DateTime<Utc>) {
     let vnt = vnt();
     let midnight = date
@@ -167,9 +168,9 @@ fn entry_times(mode: &Mode, date: NaiveDate, explicit_date: bool, now: DateTime<
             (start, start + TimeDelta::seconds(d))
         }
         Mode::Duration(d) => {
-            // Ends on `date` at the anchor's VNT clock time. With --date that is 00:00,
-            // so the entry falls on the day before (a follow-up fix in the spec).
-            let end = at(i64::from(anchor.with_timezone(&vnt).num_seconds_from_midnight()));
+            // Ends on `date` at now's VNT clock time. Go used 00:00 on an explicit --date,
+            // which put the entry on the day before.
+            let end = at(i64::from(now.with_timezone(&vnt).num_seconds_from_midnight()));
             (end - TimeDelta::seconds(d), end)
         }
         Mode::StartEnd(s, e) => {
@@ -570,12 +571,13 @@ mod tests {
     }
 
     #[test]
-    fn duration_with_explicit_date_ends_at_midnight() {
-        // Pins the Go behavior the port keeps: the entry lands on the day before.
-        // The Mode A --date follow-up in the spec changes this test.
+    fn duration_with_explicit_date_ends_at_current_time_on_that_date() {
+        // Go ended the entry at 00:00 of --date, so it landed on the day before.
+        // Now: 10:00 VNT on the 5th; --date 2026-04-02 gives 08:00-10:00 VNT on the 2nd.
+        let date = NaiveDate::from_ymd_opt(2026, 4, 2).unwrap();
         assert_eq!(
-            entry_times(&Mode::Duration(7200), day(), true, now()),
-            (utc("2026-04-04T15:00:00Z"), utc("2026-04-04T17:00:00Z"))
+            entry_times(&Mode::Duration(7200), date, true, now()),
+            (utc("2026-04-02T01:00:00Z"), utc("2026-04-02T03:00:00Z"))
         );
     }
 

@@ -573,7 +573,7 @@ final class Tray: NSObject, NSApplicationDelegate {
         var isDir: ObjCBool = false
         if let repo, FileManager.default.fileExists(atPath: repo, isDirectory: &isDir), isDir.boolValue {} else {
             model.repoError = repo.map { "Repo not found: \($0)" } ?? "Start the tray with --repo (make install sets it)."
-            NSLog(model.repoError!)
+            NSLog("%@", model.repoError!)
         }
         model.onSend = { [unowned self] in send($0) }
         model.onStop = { [unowned self] in run?.stop() }
@@ -607,7 +607,7 @@ final class Tray: NSObject, NSApplicationDelegate {
 
     func send(_ prompt: String) {
         guard run == nil, let repo else { return }
-        NSLog("prompt: \(prompt)")
+        NSLog("prompt: %@", prompt)       // never interpolate into the format: a "%" would read missing args
         model.asked = prompt
         model.stderrTail = []
         model.trimmed = false
@@ -616,7 +616,7 @@ final class Tray: NSObject, NSApplicationDelegate {
         do {
             let r = try Run(exe: "claude", args: claudeArgs(prompt: prompt, repo: repo), cwd: repo)
             r.onEvents = { [unowned self] ev in
-                for case .bash(let c) in ev { NSLog("bash: \(c)") }
+                for case .bash(let c) in ev { NSLog("bash: %@", c) }
                 let c = capEvents(model.events + ev, max: 64 * 1024)
                 model.trimmed = model.trimmed || c.dropped      // before events: its didSet redraws the reply
                 model.events = c.kept
@@ -625,12 +625,15 @@ final class Tray: NSObject, NSApplicationDelegate {
             run = r
             icon = .running
         } catch let e as POSIXError where e.code == .ENOENT {
-            NSLog("claude not found on PATH")
-            model.events = [.result("claude not found. Install Claude Code or fix PATH in the LaunchAgent.", isError: true)]
-            model.phase = .failed("claude not found")
+            // posix_spawn says ENOENT both for a missing program and a missing working directory.
+            let repoGone = !FileManager.default.fileExists(atPath: repo)
+            let why = repoGone ? "Repo not found: \(repo)" : "claude not found. Install Claude Code or fix PATH in the LaunchAgent."
+            NSLog("%@", why)
+            model.events = [.result(why, isError: true)]
+            model.phase = .failed(repoGone ? "repo not found" : "claude not found")
             icon = window.isVisible ? .idle : .failed
         } catch {
-            NSLog("claude failed to start: \(error)")
+            NSLog("claude failed to start: %@", "\(error)")
             model.events = [.result("claude failed to start: \(error.localizedDescription)", isError: true)]
             model.phase = .failed("not started")
             icon = window.isVisible ? .idle : .failed
@@ -638,7 +641,7 @@ final class Tray: NSObject, NSApplicationDelegate {
     }
 
     func ended(_ r: Run, _ e: Exit) {
-        NSLog("claude exited (\(e))")
+        NSLog("claude exited (%@)", "\(e)")
         run = nil
         procSampled = [:]
         model.claude = nil
@@ -646,6 +649,13 @@ final class Tray: NSObject, NSApplicationDelegate {
         model.phase = phaseAfter(exit: e, stopped: r.stopped, events: model.events, duration: Date().timeIntervalSince(r.started))
         if case .failed = model.phase, !window.isVisible { icon = .failed } else { icon = .idle }
         if quitting { exit(0) }
+    }
+
+    /// Quit from outside (logout, Activity Monitor, AppleScript) stops a run first, as Quit does.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard run != nil else { return .terminateNow }
+        quit()      // exits once the run's group is gone
+        return .terminateLater
     }
 
     @objc func toggle() {

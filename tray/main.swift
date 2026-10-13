@@ -91,6 +91,78 @@ func tail(_ e: Event, _ n: Int) -> Event {
     }
 }
 
+// MARK: - Process usage
+
+/// CPU time in ns and memory footprint in bytes of a process, as Activity Monitor counts them; nil once it is gone.
+func usage(of pid: pid_t) -> (cpu: UInt64, mem: UInt64)? {
+    var ri = rusage_info_v2(), tb = mach_timebase_info()
+    let rc = withUnsafeMutablePointer(to: &ri) {
+        $0.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) { proc_pid_rusage(pid, RUSAGE_INFO_V2, $0) }
+    }
+    guard rc == 0 else { return nil }
+    mach_timebase_info(&tb)     // CPU times come in Mach ticks, not ns, on Apple silicon
+    return ((ri.ri_user_time + ri.ri_system_time) * UInt64(tb.numer) / UInt64(tb.denom), ri.ri_phys_footprint)
+}
+
+/// Percent of one core between two (CPU ns, uptime s) samples; nil without an earlier one.
+func cpuPercent(_ a: (cpu: UInt64, at: TimeInterval)?, _ b: (cpu: UInt64, at: TimeInterval)) -> Double? {
+    guard let a, b.at > a.at else { return nil }
+    return max(0, Double(b.cpu) - Double(a.cpu)) / 1e9 / (b.at - a.at) * 100
+}
+
+/// Direct children of `pid`; [] once it is gone. 64 is plenty for one claude run.
+func children(of pid: pid_t) -> [pid_t] {
+    var buf = [pid_t](repeating: 0, count: 64)
+    let n = buf.withUnsafeMutableBytes { proc_listchildpids(pid, $0.baseAddress, Int32($0.count)) }
+    return n > 0 ? Array(buf.prefix(Int(n))) : []
+}
+
+/// `root`, then its descendants breadth-first; a pid seen twice is skipped.
+func descendants(of root: pid_t, children: (pid_t) -> [pid_t]) -> [pid_t] {
+    var out: [pid_t] = [], queue = [root], seen = Set<pid_t>()
+    while !queue.isEmpty {
+        let p = queue.removeFirst()
+        guard seen.insert(p).inserted else { continue }
+        out.append(p)
+        queue += children(p)
+    }
+    return out
+}
+
+/// The process's short name (proc_name), "?" once it is gone.
+func procName(_ pid: pid_t) -> String {
+    var buf = [CChar](repeating: 0, count: 64)
+    return proc_name(pid, &buf, UInt32(buf.count)) > 0 ? String(cString: buf) : "?"
+}
+
+/// One sampled process; cpu is nil on its first sample.
+struct ProcStat: Equatable {
+    let pid: pid_t
+    let name: String
+    let cpu: Double?
+    let mem: UInt64
+}
+
+/// "212 MB", or "5.5 MB" under 10 MB.
+func mem(_ bytes: UInt64) -> String {
+    let mb = Double(bytes) / 1_048_576
+    return String(format: mb < 10 ? "%.1f MB" : "%.0f MB", mb)
+}
+
+func pctText(_ cpu: Double?) -> String { cpu.map { String(format: "%.1f%%", $0) } ?? "—" }
+
+func claudeLine(_ procs: [ProcStat]?) -> String {
+    guard let procs, !procs.isEmpty else { return "Claude: idle" }
+    let cpus = procs.compactMap(\.cpu)
+    return "Claude: \(procs.count) process\(procs.count == 1 ? "" : "es") · CPU \(pctText(cpus.isEmpty ? nil : cpus.reduce(0, +))) · "
+        + mem(procs.reduce(0) { $0 + $1.mem })
+}
+
+func trayLine(cpu: Double?, mem m: UInt64) -> String { "Tray: CPU \(pctText(cpu)) · " + mem(m) }
+
+/// The cells of one expanded process row: pid, CPU, memory, name.
+func procCells(_ p: ProcStat) -> [String] { ["\(p.pid)", pctText(p.cpu), mem(p.mem), p.name] }
+
 #if SELFTEST
 // claudeArgs
 let a = claudeArgs(prompt: "--help me log 2h", repo: "/r")
@@ -135,6 +207,26 @@ precondition(c6.kept == [.text("")] && c6.dropped, "no split character: \(c6)")
 for (c, max) in [(c1, 50), (c3, 65_536), (c4, 50), (c5, 2), (c6, 1)] {
     precondition(c.kept.reduce(0) { $0 + size($1) } <= max, "kept within max: \(max)")
 }
+// descendants: claude(10) → bash(11), trello-mcp(12); bash → clockify(13); 99 unrelated; 13 → 10 is a cycle.
+let tree: [pid_t: [pid_t]] = [10: [11, 12], 11: [13], 13: [10], 99: [100]]
+precondition(descendants(of: 10) { tree[$0] ?? [] } == [10, 11, 12, 13], "tree")
+precondition(descendants(of: 42) { _ in [] } == [42], "lone root")
+
+// usage, cpuPercent, formatting
+precondition(usage(of: -1) == nil && usage(of: getpid()) != nil, "usage")
+precondition(cpuPercent(nil, (cpu: 5, at: 1)) == nil, "first sample")
+precondition(cpuPercent((cpu: 0, at: 0), (cpu: 500_000_000, at: 2)) == 25, "0.5 s CPU in 2 s = 25%")
+precondition(mem(5_767_168) == "5.5 MB" && mem(222_298_112) == "212 MB", "mem: \(mem(5_767_168)) \(mem(222_298_112))")
+let ps = [ProcStat(pid: 51204, name: "claude", cpu: 6.9, mem: 184_549_376),
+          ProcStat(pid: 51231, name: "trello-mcp", cpu: 0.4, mem: 30_408_704),
+          ProcStat(pid: 51290, name: "clockify", cpu: 1.1, mem: 7_340_032)]
+precondition(claudeLine(nil) == "Claude: idle" && claudeLine([]) == "Claude: idle", "idle")
+precondition(claudeLine(ps) == "Claude: 3 processes · CPU 8.4% · 212 MB", "line: \(claudeLine(ps))")
+precondition(claudeLine([ProcStat(pid: 1, name: "claude", cpu: nil, mem: 1_048_576)]) == "Claude: 1 process · CPU — · 1.0 MB", "first sample")
+precondition(trayLine(cpu: 0, mem: 14_680_064) == "Tray: CPU 0.0% · 14 MB", "tray: \(trayLine(cpu: 0, mem: 14_680_064))")
+precondition(procCells(ps[2]) == ["51290", "1.1%", "7.0 MB", "clockify"], "cells: \(procCells(ps[2]))")
+precondition(children(of: getpid()).isEmpty && children(of: -1).isEmpty, "children: none yet")
+precondition(ProcessInfo.processInfo.processName.hasPrefix(procName(getpid())) && procName(-1) == "?", "procName: \(procName(getpid()))")
 print("tray selftest ok")
 exit(0)
 #endif

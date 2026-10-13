@@ -311,6 +311,55 @@ final class Run {
     }
 }
 
+// MARK: - Menu bar icon
+
+enum IconState { case idle, running, failed }
+
+/// Ring + hand when idle, ring + dot while running, ring + "!" after a failure.
+/// A template image, so it follows the menu bar's light and dark.
+func iconImage(_ s: IconState) -> NSImage {
+    let side: CGFloat = 17
+    let img = NSImage(size: NSSize(width: side, height: side), flipped: false) { _ in
+        let c = NSPoint(x: side / 2, y: side / 2)
+        NSColor.black.set()
+        let ring = NSBezierPath()
+        ring.appendArc(withCenter: c, radius: 7, startAngle: 0, endAngle: 360)
+        ring.lineWidth = 2.2
+        ring.stroke()
+        switch s {
+        case .idle:
+            let hand = NSBezierPath()
+            hand.move(to: NSPoint(x: c.x, y: c.y + 4.2))
+            hand.line(to: c)
+            hand.line(to: NSPoint(x: c.x + 3.2, y: c.y))
+            hand.lineWidth = 1.8
+            hand.stroke()
+        case .running:
+            NSBezierPath(ovalIn: NSRect(x: c.x - 3, y: c.y - 3, width: 6, height: 6)).fill()
+        case .failed:
+            NSRect(x: c.x - 0.9, y: c.y - 0.4, width: 1.8, height: 4.4).fill()
+            NSRect(x: c.x - 0.9, y: c.y - 3.4, width: 1.8, height: 1.8).fill()
+        }
+        return true
+    }
+    img.isTemplate = true
+    return img
+}
+
+func iconLabel(_ s: IconState) -> String {
+    switch s {
+    case .idle: "Clockify Agent"
+    case .running: "Clockify Agent: Claude is running"
+    case .failed: "Clockify Agent: the last run failed"
+    }
+}
+
+/// --repo <path>, else nil.
+func repoArg(_ args: [String]) -> String? {
+    guard let i = args.firstIndex(of: "--repo"), i + 1 < args.count else { return nil }
+    return args[i + 1]
+}
+
 #if SELFTEST
 // claudeArgs
 let a = claudeArgs(prompt: "--help me log 2h", repo: "/r")
@@ -460,6 +509,218 @@ precondition(phaseAfter(exit: .signal(15), stopped: true, events: [], duration: 
 precondition(promptTitle("log 2h to https://trello.com/c/AbC123 from 09:00 please") == "log 2h to https://trello.com/c/AbC123 fr…", "title: \(promptTitle("log 2h to https://trello.com/c/AbC123 from 09:00 please"))")
 precondition(promptTitle("  what\ndid I log  ") == "what did I log", "title squashes whitespace")
 
+// repoArg
+precondition(repoArg(["x", "--repo", "/r"]) == "/r" && repoArg(["x"]) == nil && repoArg(["x", "--repo"]) == nil, "repoArg")
+precondition(iconImage(.running).size == NSSize(width: 17, height: 17) && iconImage(.idle).isTemplate, "icon")
+
 print("tray selftest ok")
 exit(0)
 #endif
+
+// MARK: - App
+
+/// The panel's window, under the status item. Borderless, not an NSPopover (its
+/// window alone took 13 MB in claude-usage). Non-activating: it takes the keyboard
+/// without activating the app. Esc, a click elsewhere or another app taking the
+/// keyboard closes it.
+final class PanelWindow: NSPanel {
+    var onClose: () -> Void = {}
+    override var canBecomeKey: Bool { true }
+    override func resignKey() { super.resignKey(); onClose() }
+    override func cancelOperation(_ sender: Any?) { onClose() }
+}
+
+final class Tray: NSObject, NSApplicationDelegate {
+    let repo: String?
+    var item: NSStatusItem!
+    let model = PanelModel()
+    lazy var panel = PanelController(model)
+    let window = PanelWindow(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
+    var clicks: Any?                // watches clicks in other apps while the panel shows
+    var statsTimer: Timer?          // samples CPU and memory while the panel shows
+    var traySampled: (cpu: UInt64, at: TimeInterval)?
+    var procSampled: [pid_t: (cpu: UInt64, at: TimeInterval)] = [:]
+    var run: Run?
+    var icons: [IconState: NSImage] = [:]
+    var icon = IconState.idle { didSet { if icon != oldValue { showIcon() } } }
+    var quitting = false
+    var signals: [DispatchSourceSignal] = []
+
+    init(repo: String?) { self.repo = repo }
+
+    func applicationDidFinishLaunching(_ n: Notification) {
+        item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        item.button?.target = self
+        item.button?.action = #selector(toggle)
+        showIcon()
+        // Accessory apps never show a menu bar, but its key equivalents still reach the first
+        // responder: without an Edit menu, ⌘V, ⌘C, ⌘A and ⌘Z do nothing in the prompt.
+        let edit = NSMenu(title: "Edit")
+        for (title, sel, key) in [("Undo", "undo:", "z"), ("Redo", "redo:", "Z"), ("Cut", "cut:", "x"),
+                                  ("Copy", "copy:", "c"), ("Paste", "paste:", "v"), ("Select All", "selectAll:", "a")] {
+            edit.addItem(withTitle: title, action: Selector((sel)), keyEquivalent: key)
+        }
+        let menu = NSMenu()
+        for sub in [NSMenu(title: "Clockify Agent"), edit] {
+            let it = NSMenuItem()
+            it.submenu = sub
+            menu.addItem(it)
+        }
+        NSApp.mainMenu = menu
+        // Started outside launchd (Finder, `open`) the PATH lacks claude's and clockify's directory.
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        setenv("PATH", "\(home)/.local/bin:/opt/homebrew/bin:" + (ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin"), 1)
+        var isDir: ObjCBool = false
+        if let repo, FileManager.default.fileExists(atPath: repo, isDirectory: &isDir), isDir.boolValue {} else {
+            model.repoError = repo.map { "Repo not found: \($0)" } ?? "Start the tray with --repo (make install sets it)."
+            NSLog(model.repoError!)
+        }
+        model.onSend = { [unowned self] in send($0) }
+        model.onStop = { [unowned self] in run?.stop() }
+        model.onLog = { [unowned self] in closePanel(); NSWorkspace.shared.open(logURL) }
+        model.onQuit = { [unowned self] in closePanel(); quit() }
+        model.onResize = { [unowned self] in place() }
+        window.contentViewController = panel
+        window.level = .popUpMenu
+        window.hasShadow = true
+        window.hidesOnDeactivate = false
+        window.isReleasedWhenClosed = false
+        window.onClose = { [unowned self] in closePanel() }
+        for sig in [SIGTERM, SIGINT] {
+            // A no-op handler, not SIG_IGN: an ignored signal stays ignored across
+            // exec, and claude would inherit it and shrug off Stop's SIGTERM.
+            signal(sig) { _ in }
+            let src = DispatchSource.makeSignalSource(signal: sig, queue: .main)
+            src.setEventHandler { [unowned self] in quit() }
+            src.resume()
+            signals.append(src)
+        }
+    }
+
+    func showIcon() {
+        let img = icons[icon] ?? iconImage(icon)
+        icons[icon] = img
+        item.button?.image = img
+        item.button?.toolTip = iconLabel(icon)
+        item.button?.setAccessibilityLabel(iconLabel(icon))
+    }
+
+    func send(_ prompt: String) {
+        guard run == nil, let repo else { return }
+        NSLog("prompt: \(prompt)")
+        model.asked = prompt
+        model.stderrTail = []
+        model.trimmed = false
+        model.events = []
+        model.phase = .running(since: Date())
+        do {
+            let r = try Run(exe: "claude", args: claudeArgs(prompt: prompt, repo: repo), cwd: repo)
+            r.onEvents = { [unowned self] ev in
+                for case .bash(let c) in ev { NSLog("bash: \(c)") }
+                let c = capEvents(model.events + ev, max: 64 * 1024)
+                model.trimmed = model.trimmed || c.dropped      // before events: its didSet redraws the reply
+                model.events = c.kept
+            }
+            r.onExit = { [unowned self, unowned r] e in ended(r, e) }
+            run = r
+            icon = .running
+        } catch let e as POSIXError where e.code == .ENOENT {
+            NSLog("claude not found on PATH")
+            model.events = [.result("claude not found. Install Claude Code or fix PATH in the LaunchAgent.", isError: true)]
+            model.phase = .failed("claude not found")
+            icon = window.isVisible ? .idle : .failed
+        } catch {
+            NSLog("claude failed to start: \(error)")
+            model.events = [.result("claude failed to start: \(error.localizedDescription)", isError: true)]
+            model.phase = .failed("not started")
+            icon = window.isVisible ? .idle : .failed
+        }
+    }
+
+    func ended(_ r: Run, _ e: Exit) {
+        NSLog("claude exited (\(e))")
+        run = nil
+        procSampled = [:]
+        model.claude = nil
+        model.stderrTail = r.stderrTail
+        model.phase = phaseAfter(exit: e, stopped: r.stopped, events: model.events, duration: Date().timeIntervalSince(r.started))
+        if case .failed = model.phase, !window.isVisible { icon = .failed } else { icon = .idle }
+        if quitting { exit(0) }
+    }
+
+    @objc func toggle() {
+        if window.isVisible { closePanel() } else { openPanel() }
+    }
+
+    func openPanel() {
+        guard let b = item.button, let bar = b.window else { return }
+        if icon == .failed { icon = .idle }
+        let r = bar.convertToScreen(b.convert(b.bounds, to: nil))
+        model.cap = ((bar.screen ?? NSScreen.main)?.visibleFrame.height ?? 800) - 8    // the whole panel
+        traySampled = nil
+        procSampled = [:]
+        sampleStats()
+        statsTimer?.invalidate()
+        let t = Timer(timeInterval: 2, repeats: true) { [unowned self] _ in sampleStats() }
+        RunLoop.main.add(t, forMode: .common)
+        statsTimer = t
+        panel.render()                  // sizes the window
+        place(under: r)
+        window.makeKeyAndOrderFront(nil)
+        panel.focusPrompt()
+        // The status item's own clicks reach us as global events; its action does the toggling.
+        clicks = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [unowned self] e in
+            if !r.contains(e.locationInWindow) { closePanel() }
+        }
+    }
+
+    /// Keeps the panel under the status item and on screen; after a resize, keeps its top edge.
+    func place(under r: NSRect? = nil) {
+        guard let b = item.button, let bar = b.window else { return }
+        let r = r ?? bar.convertToScreen(b.convert(b.bounds, to: nil))
+        let vis = (bar.screen ?? NSScreen.main)?.visibleFrame ?? .zero
+        let s = panel.fittingSize()
+        window.setFrame(NSRect(x: min(max(r.midX - s.width / 2, vis.minX), vis.maxX - s.width), y: bar.frame.minY - s.height,
+                               width: s.width, height: s.height), display: true)
+    }
+
+    func closePanel() {
+        guard window.isVisible else { return }
+        window.orderOut(nil)
+        if let c = clicks { NSEvent.removeMonitor(c) }
+        clicks = nil
+        statsTimer?.invalidate()
+        statsTimer = nil
+    }
+
+    /// The tray's own usage and, during a run, the claude process tree's.
+    func sampleStats() {
+        let at = ProcessInfo.processInfo.systemUptime
+        if let u = usage(of: getpid()) {
+            model.tray = trayLine(cpu: cpuPercent(traySampled, (u.cpu, at)), mem: u.mem)
+            traySampled = (u.cpu, at)
+        }
+        defer { model.statsChanged() }
+        guard let r = run else { model.claude = nil; return }
+        var next: [pid_t: (cpu: UInt64, at: TimeInterval)] = [:]
+        model.claude = descendants(of: r.pid, children: children(of:)).compactMap { pid in
+            guard let u = usage(of: pid) else { return nil }     // gone between listing and sampling
+            next[pid] = (u.cpu, at)
+            return ProcStat(pid: pid, name: procName(pid), cpu: cpuPercent(procSampled[pid], (u.cpu, at)), mem: u.mem)
+        }
+        procSampled = next
+    }
+
+    func quit() {
+        guard let r = run else { exit(0) }
+        quitting = true
+        r.stop()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) { exit(0) }
+    }
+}
+
+let app = NSApplication.shared
+let tray = Tray(repo: repoArg(CommandLine.arguments))
+app.delegate = tray
+app.setActivationPolicy(.accessory)
+app.run()

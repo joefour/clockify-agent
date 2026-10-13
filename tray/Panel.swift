@@ -131,6 +131,27 @@ func label(_ s: String, _ size: CGFloat, _ color: NSColor, wrap: CGFloat? = nil,
     label(s, size, .r, color, wrap: wrap, align: align)
 }
 
+/// Claude's markdown, inline only: bold, italic, `code`, strikethrough and links, newlines kept.
+/// AppKit draws none of the parsed intents, so each maps to a font here; text that fails to parse stays plain.
+/// shortcut: headings, lists and tables show as their markdown source; map presentationIntent if they need styling.
+func markdown(_ t: String, _ size: CGFloat, _ c: NSColor) -> NSAttributedString {
+    guard let md = try? AttributedString(markdown: t, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)) else {
+        return NSAttributedString(string: t, attributes: [.font: hvFont(size), .foregroundColor: c])
+    }
+    let s = NSMutableAttributedString()
+    for r in md.runs {
+        let i = r.inlinePresentationIntent ?? []
+        var f = i.contains(.code) ? NSFont.monospacedSystemFont(ofSize: size - 1, weight: .regular) : hvFont(size, i.contains(.stronglyEmphasized) ? .b : .r)
+        if i.contains(.emphasized) { f = NSFontManager.shared.convert(f, toHaveTrait: .italicFontMask) }
+        var a: [NSAttributedString.Key: Any] = [.font: f, .foregroundColor: c]
+        if i.contains(.strikethrough) { a[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
+        // The text can come from Trello cards, so the tooltip shows where a link really goes.
+        if let l = r.link { a[.link] = l; a[.toolTip] = l.absoluteString }
+        s.append(NSAttributedString(string: String(md[r.range].characters), attributes: a))
+    }
+    return s
+}
+
 func recolor(_ f: NSTextField, _ c: NSColor) {
     let a = NSMutableAttributedString(attributedString: f.attributedStringValue)
     a.addAttribute(.foregroundColor, value: c, range: NSRange(location: 0, length: a.length))
@@ -530,28 +551,31 @@ final class PanelController: NSViewController, NSTextViewDelegate {
         return vstack([vstack([head, block(p.ink, h: 1)], 6), replyScroll], 8)
     }
 
-    /// Prose at 13 in ink, each Bash call as a muted "$ command" line; the result
+    /// Prose at 13 in ink, rendered from markdown; each Bash call as a muted "$ command" line; the result
     /// only when it adds something (it usually repeats the last prose); stderr's
     /// tail when a run failed without a result.
     func replyText() -> NSAttributedString {
         let s = NSMutableAttributedString()
-        func add(_ t: String, _ size: CGFloat, _ c: NSColor, indent: CGFloat = 0) {
+        func add(_ t: String, _ size: CGFloat, _ c: NSColor, indent: CGFloat = 0, md: Bool = false) {
             let ps = NSMutableParagraphStyle()
             ps.paragraphSpacing = 6
             ps.firstLineHeadIndent = indent
             ps.headIndent = indent
             if s.length > 0 { s.append(NSAttributedString(string: "\n")) }
-            s.append(NSAttributedString(string: t, attributes: [.font: hvFont(size), .foregroundColor: c, .paragraphStyle: ps]))
+            let a = NSMutableAttributedString(attributedString: md ? markdown(t, size, c)
+                : NSAttributedString(string: t, attributes: [.font: hvFont(size), .foregroundColor: c]))
+            a.addAttribute(.paragraphStyle, value: ps, range: NSRange(location: 0, length: a.length))
+            s.append(a)
         }
         if m.trimmed { add("… earlier output trimmed", 12, p.muted) }
         var lastText: String?, hasResult = false
         for e in m.events {
             switch e {
-            case .text(let t): add(t, 13, p.ink); lastText = t
+            case .text(let t): add(t, 13, p.ink, md: true); lastText = t
             case .bash(let c): add("$ " + c, 12, p.muted, indent: 12)
             case .result(let t, let isError):
                 hasResult = true
-                if isError { add(t, 13, p.redInk) } else if t != lastText { add(t, 13, p.ink) }
+                if isError { add(t, 13, p.redInk) } else if t != lastText { add(t, 13, p.ink, md: true) }
             }
         }
         if case .failed = m.phase, !hasResult { m.stderrTail.forEach { add($0, 12, p.redInk) } }

@@ -408,6 +408,16 @@ let c5 = capEvents([.text("xé")], max: 2)
 precondition(c5.kept == [.text("é")] && c5.dropped, "multibyte kept whole: \(c5)")
 let c6 = capEvents([.text("xé")], max: 1)
 precondition(c6.kept == [.text("")] && c6.dropped, "no split character: \(c6)")
+
+// markdown
+let md = markdown("Logged **2h** to `abc`\nsee [card](https://trello.com/c/x) *now*", 13, .black)
+precondition(md.string == "Logged 2h to abc\nsee card now", "markup stripped, newline kept: \(md.string)")
+let bold = md.attribute(.font, at: 7, effectiveRange: nil) as! NSFont, code = md.attribute(.font, at: 13, effectiveRange: nil) as! NSFont
+precondition(bold.fontDescriptor.symbolicTraits.contains(.bold) && code.isFixedPitch, "bold and code fonts")
+precondition((md.attribute(.link, at: 21, effectiveRange: nil) as? URL)?.absoluteString == "https://trello.com/c/x", "link kept")
+precondition(md.attribute(.toolTip, at: 21, effectiveRange: nil) as? String == "https://trello.com/c/x", "link shows its URL")
+precondition(NSFontManager.shared.traits(of: md.attribute(.font, at: 26, effectiveRange: nil) as! NSFont).contains(.italicFontMask), "italic")
+precondition(markdown("$ ls *.go", 13, .black).string == "$ ls *.go", "unmatched markers stay")
 for (c, max) in [(c1, 50), (c3, 65_536), (c4, 50), (c5, 2), (c6, 1)] {
     precondition(c.kept.reduce(0) { $0 + size($1) } <= max, "kept within max: \(max)")
 }

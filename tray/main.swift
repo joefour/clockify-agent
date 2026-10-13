@@ -191,6 +191,7 @@ final class Run {
     private var pending = Data(), errPending = Data()
     private var exitStatus: Exit?, outDone = false, errDone = false
     private var watch: DispatchSourceProcess?
+    private var stopGroups: [pid_t] = []    // every process group in the tree when Stop was pressed
 
     /// Throws the errno posix_spawnp returned (ENOENT: no such program on PATH).
     init(exe: String, args: [String], cwd: String) throws {
@@ -237,13 +238,19 @@ final class Run {
         watch = src
     }
 
-    /// SIGTERM to the whole group, SIGKILL 3 s later for anything still in it.
+    /// SIGTERM to every process group in the tree (claude runs each Bash call in a group of
+    /// its own), SIGKILL 3 s later if claude is still up; exited() SIGKILLs them once it is down.
     func stop() {
         guard !exited else { return }
         stopped = true
-        kill(-pid, SIGTERM)
-        let pg = pid
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { kill(-pg, SIGKILL) }
+        let mine = getpgrp()
+        stopGroups = Array(Set([pid] + descendants(of: pid, children: children(of:)).map(getpgid).filter { $0 > 0 && $0 != mine }))
+        stopGroups.forEach { kill(-$0, SIGTERM) }
+        // Guarded: once claude is down and reaped, its group number may be reused.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+            guard let self, !exited else { return }
+            stopGroups.forEach { kill(-$0, SIGKILL) }
+        }
     }
 
     private func stdout(_ d: Data) {
@@ -290,7 +297,7 @@ final class Run {
         exited = true
         // Children claude left behind (an MCP server, a background job). After a Stop they
         // already had SIGTERM: whatever is left gets SIGKILL now, before onExit can end the app.
-        kill(-pid, stopped ? SIGKILL : SIGTERM)
+        if stopped { stopGroups.forEach { kill(-$0, SIGKILL) } } else { kill(-pid, SIGTERM) }
         // stdout and stderr normally hit EOF right away; don't wait on a straggler holding them open.
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
             guard let self, !outDone || !errDone else { return }
@@ -486,6 +493,16 @@ let r5 = try! Run(exe: "/bin/sh", args: ["-c", #"printf %s "$1" > "$2""#, "sh", 
 r5.onExit = { echoEnd = $0 }
 precondition(waitUntil(5) { echoEnd != nil } && (try? String(contentsOfFile: echoFile, encoding: .utf8)) == odd, "argv verbatim")
 try? FileManager.default.removeItem(atPath: echoFile)
+
+// Run: Stop also ends children in process groups of their own (claude runs each Bash call in one).
+var detachedEnd: Exit?
+let r7 = try! Run(exe: "/bin/sh", args: ["-c", "set -m; sleep 30 & wait"], cwd: "/tmp")
+r7.onExit = { detachedEnd = $0 }
+precondition(waitUntil(2) { children(of: r7.pid).map(procName) == ["sleep"] && getpgid(children(of: r7.pid)[0]) != r7.pid }, "sleep in its own group")
+let detached = children(of: r7.pid)[0]
+r7.stop()
+precondition(waitUntil(5) { detachedEnd != nil } && r7.stopped, "stop ends the run")
+precondition(waitUntil(1) { kill(detached, 0) == -1 }, "the child in its own group is gone too")
 
 // Run: a missing program throws ENOENT.
 do {

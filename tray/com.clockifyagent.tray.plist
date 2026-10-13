@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Rendered into ~/Library/LaunchAgents by `make install`; @HOME@ and @REPO@ are filled in there. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.clockifyagent.tray</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>@HOME@/Applications/Clockify Agent.app/Contents/MacOS/clockify-agent-tray</string>
+		<string>--repo</string>
+		<string>@REPO@</string>
+	</array>
+	<!-- Login Items names this agent after the app. -->
+	<key>AssociatedBundleIdentifiers</key>
+	<string>com.clockifyagent.tray</string>
+	<key>RunAtLoad</key>
+	<true/>
+	<!-- Relaunch only on a crash: Quit exits 0 and stays down until next login. -->
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+	<!-- claude and clockify live in ~/.local/bin. -->
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>@HOME@/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+	</dict>
+	<!-- Quit during a run waits up to 3.5 s for claude's process group to stop. -->
+	<key>ExitTimeOut</key>
+	<integer>10</integer>
+	<key>StandardOutPath</key>
+	<string>@HOME@/Library/Logs/clockify-agent-tray.log</string>
+	<key>StandardErrorPath</key>
+	<string>@HOME@/Library/Logs/clockify-agent-tray.log</string>
+</dict>
+</plist>

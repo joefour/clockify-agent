@@ -189,7 +189,7 @@ final class Run {
     var onExit: (Exit) -> Void = { _ in }
     private let out = Pipe(), err = Pipe()
     private var pending = Data(), errPending = Data()
-    private var exitStatus: Exit?, outDone = false
+    private var exitStatus: Exit?, outDone = false, errDone = false
     private var watch: DispatchSourceProcess?
 
     /// Throws the errno posix_spawnp returned (ENOENT: no such program on PATH).
@@ -247,6 +247,7 @@ final class Run {
     }
 
     private func stdout(_ d: Data) {
+        guard !outDone else { return }      // a late chunk after the 1 s timeout
         if d.isEmpty {
             out.fileHandleForReading.readabilityHandler = nil
             if !pending.isEmpty { emit(pending[...]) }
@@ -269,7 +270,13 @@ final class Run {
     }
 
     private func stderr(_ d: Data) {
-        if d.isEmpty { err.fileHandleForReading.readabilityHandler = nil; return }
+        guard !errDone else { return }
+        if d.isEmpty {
+            err.fileHandleForReading.readabilityHandler = nil
+            errDone = true
+            finish()
+            return
+        }
         errPending.append(d)
         let lines = String(decoding: errPending, as: UTF8.self).split(separator: "\n", omittingEmptySubsequences: false)
         errPending = Data(lines.last.map { String($0) }?.utf8 ?? "".utf8)
@@ -281,19 +288,23 @@ final class Run {
         watch = nil
         exitStatus = e
         exited = true
-        kill(-pid, SIGTERM)     // children claude left behind (an MCP server, a background job)
-        // stdout normally hits EOF right away; don't wait on a straggler holding it open.
+        // Children claude left behind (an MCP server, a background job). After a Stop they
+        // already had SIGTERM: whatever is left gets SIGKILL now, before onExit can end the app.
+        kill(-pid, stopped ? SIGKILL : SIGTERM)
+        // stdout and stderr normally hit EOF right away; don't wait on a straggler holding them open.
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
-            guard let self, !outDone else { return }
+            guard let self, !outDone || !errDone else { return }
             outDone = true
+            errDone = true
             out.fileHandleForReading.readabilityHandler = nil
+            err.fileHandleForReading.readabilityHandler = nil
             finish()
         }
         finish()
     }
 
     private func finish() {
-        guard outDone, let e = exitStatus else { return }
+        guard outDone, errDone, let e = exitStatus else { return }
         if !errPending.isEmpty { stderrTail = Array((stderrTail + [String(decoding: errPending, as: UTF8.self)]).suffix(20)); errPending = Data() }
         exitStatus = nil      // once
         onExit(e)
@@ -397,13 +408,27 @@ r3.stop()
 precondition(waitUntil(5) { stopEnd != nil } && r3.stopped, "stop ends the run")
 precondition(waitUntil(5) { kill(-r3.pid, 0) == -1 && errno == ESRCH }, "no process left in the group")
 
-// Run: a background child holding stdout open doesn't keep the run going.
-var holdEnd: Exit?, holdEvents: [Event] = []
-let r4 = try! Run(exe: "/bin/sh", args: ["-c", "sleep 30 & printf '%s\\n' '\(okLine)'; exit 0"], cwd: "/tmp")
+// Run: a child that ignores SIGTERM and holds stdout open doesn't keep the run going past the 1 s timeout.
+var holdEnd: Exit?, holdEvents: [Event] = [], holdAt: Date?
+let holdStart = Date()
+let r4 = try! Run(exe: "/bin/sh", args: ["-c", "trap '' TERM; sleep 30 & printf '%s\\n' '\(okLine)'; exit 0"], cwd: "/tmp")
 r4.onEvents = { holdEvents += $0 }
-r4.onExit = { holdEnd = $0 }
-precondition(waitUntil(2.5) { holdEnd != nil } && holdEnd == .code(0) && holdEvents.count == 1, "straggler: \(String(describing: holdEnd)) \(holdEvents)")
-precondition(waitUntil(2) { kill(-r4.pid, 0) == -1 }, "straggler killed with the group")
+r4.onExit = { holdEnd = $0; holdAt = Date() }
+precondition(waitUntil(3) { holdEnd != nil } && holdEnd == .code(0) && holdEvents.count == 1, "straggler: \(String(describing: holdEnd)) \(holdEvents)")
+let held = holdAt!.timeIntervalSince(holdStart)
+precondition(held > 0.9 && held < 2.5, "ended by the 1 s timeout: \(held)")
+kill(-r4.pid, SIGKILL)
+precondition(waitUntil(2) { kill(-r4.pid, 0) == -1 }, "straggler cleaned up")
+
+// Run: after Stop, a child that ignores SIGTERM is gone right after onExit (Review Focus 2).
+var stubbornEnd: Exit?
+let r6 = try! Run(exe: "/bin/sh", args: ["-c", "(trap '' TERM; exec sleep 30) & sleep 30"], cwd: "/tmp")
+r6.onExit = { stubbornEnd = $0 }
+// Both children named sleep: the subshell has set its trap and exec'd, so the SIGTERM can't win a race with it.
+precondition(waitUntil(2) { children(of: r6.pid).map(procName) == ["sleep", "sleep"] }, "two sleeps started: \(children(of: r6.pid).map(procName))")
+r6.stop()
+precondition(waitUntil(5) { stubbornEnd != nil } && r6.stopped, "stop ends the run")
+precondition(waitUntil(0.5) { kill(-r6.pid, 0) == -1 && errno == ESRCH }, "SIGTERM-ignoring child killed with the group")
 
 // Run: an odd prompt reaches the program as one verbatim argv element (Review Focus 4).
 let echoFile = NSTemporaryDirectory() + "ck-argv-\(getpid())"

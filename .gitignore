@@ -1,0 +1,6 @@
+# Visual companion sessions from brainstorming
+.superpowers/
+# make build / make app output
+/clockify
+build/
+*.plist.tmp

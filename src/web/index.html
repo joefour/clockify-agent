@@ -100,6 +100,8 @@
         <div id="descBox" hidden>
           <div class="lbl">Description</div>
           <input id="desc" placeholder="What you worked on" autocomplete="off" aria-label="Description">
+        </div>
+        <div id="projBox" hidden>
           <div class="lbl">Project</div>
           <select id="project" aria-label="Project"><option value="">Loading projects…</option></select>
         </div>
@@ -157,8 +159,11 @@ async function api(path, body) {
 // ---- Log ----
 const st = { card: null, desc: false, dur: null, hits: [], hi: -1, busy: false, projects: false };
 
+// A card on a board the config does not map needs a project picked by hand.
+const needsProject = () => st.desc || Boolean(st.card && !st.card.mapped);
+
 function ready() {
-  const what = st.desc ? $('desc').value.trim() && $('project').value : st.card;
+  const what = st.desc ? $('desc').value.trim() && $('project').value : st.card && (st.card.mapped || $('project').value);
   const when = st.dur === 'other' ? $('other').value.trim() : st.dur;
   return Boolean(what && when) && !st.busy;
 }
@@ -171,6 +176,7 @@ function paintLog() {
   $('start').hidden = st.dur === 'other';
   $('ticketBox').hidden = st.desc;
   $('descBox').hidden = !st.desc;
+  $('projBox').hidden = !needsProject();
   $('mode').textContent = st.desc ? 'Ticket instead' : 'Description instead';
   $('searchBox').hidden = Boolean(st.card);
   $('sel').hidden = !st.card;
@@ -206,7 +212,7 @@ function showMenu(hits, error) {
   });
 }
 function closeMenu() { $('menu').hidden = true; st.hits = []; st.hi = -1; }
-function pick(h) { st.card = h; $('q').value = ''; closeMenu(); paintLog(); }
+function pick(h) { st.card = h; $('q').value = ''; closeMenu(); paintLog(); loadProjects(); }
 
 $('q').addEventListener('keydown', (ev) => {
   if ($('menu').hidden || !st.hits.length) return;
@@ -228,9 +234,10 @@ $('pills').addEventListener('click', (ev) => {
 });
 for (const id of ['other', 'desc', 'project']) for (const t of ['input', 'change']) $(id).addEventListener(t, paintLog);
 
-$('mode').addEventListener('click', async () => {
-  st.desc = !st.desc; paintLog();
-  if (!st.desc || st.projects) return;
+$('mode').addEventListener('click', () => { st.desc = !st.desc; paintLog(); loadProjects(); });
+
+async function loadProjects() {
+  if (!needsProject() || st.projects) return;
   st.projects = true;
   try {
     const list = await api('/api/projects');
@@ -241,7 +248,7 @@ $('mode').addEventListener('click', async () => {
     st.projects = false;
     $('project').replaceChildren(new Option(`Could not load projects: ${e.message}`, ''));
   }
-});
+}
 
 function timeArgs() {
   if (st.dur === 'other') return $('other').value.trim().split(/\s+/);
@@ -259,7 +266,7 @@ async function submitLog() {
   st.busy = true; paintLog();   // one tap, one entry: the button stays off until the answer
   const msg = $('logMsg');
   msg.className = 'msg muted'; msg.textContent = 'Logging…';
-  const body = st.desc ? { description: $('desc').value.trim(), project_id: $('project').value } : { card_url: st.card.url };
+  const body = st.desc ? { description: $('desc').value.trim(), project_id: $('project').value } : { card_url: st.card.url, ...(st.card.mapped ? {} : { project_id: $('project').value }) };
   body.args = timeArgs();
   body.date = dateTouched && $('date').value !== today() ? $('date').value : '';
   body.dry_run = DRY;
@@ -330,7 +337,7 @@ function follow() {
   es.onmessage = (m) => {
     const e = JSON.parse(m.data), r = $('reply');
     switch (e.type) {
-      case 'idle': es.close(); break;
+      case 'idle': es.close(); setRunning(false); break;
       case 'start':
         r.replaceChildren(); $('asked').textContent = e.prompt;
         ask.started = e.started; ask.gotResult = false; setRunning(true); break;
@@ -359,7 +366,7 @@ async function send() {
 $('sendBtn').addEventListener('click', send);
 $('prompt').addEventListener('keydown', (ev) => { if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey)) { ev.preventDefault(); send(); } });
 $('stopBtn').addEventListener('click', () => api('/api/ask/stop', {}).catch(() => {}));
-document.addEventListener('visibilitychange', () => { if (document.hidden) return; refreshDate(); if (ask.running) follow(); });
+document.addEventListener('visibilitychange', () => { if (document.hidden) return; refreshDate(); loadTotals(); refreshChips(); if (ask.running) follow(); });
 
 // ---- Start ----
 if (matchMedia('(pointer: coarse)').matches) for (const k of document.querySelectorAll('.k')) k.hidden = true;

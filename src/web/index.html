@@ -77,6 +77,7 @@
   .reply.err { color: var(--err); }
   .tool { font-size: 11px; color: #9a9a9a; margin: 8px 0 4px; }
   .code { font: 12px/1.45 ui-monospace, Menlo, monospace; background: rgba(255,255,255,.08); border-radius: 9px; padding: 8px 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  #log { z-index: 1; }   /* the search menu must paint over the Totals card below it on a phone */
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -247,14 +248,20 @@ function timeArgs() {
   return $('start').value ? [$('start').value, st.dur] : [st.dur];
 }
 
+// An untouched date means today: the field follows the clock so a tab left open overnight logs to the new day.
+let dateTouched = false;
+function refreshDate() { if (!dateTouched) $('date').value = today(); }
+for (const t of ['input', 'change']) $('date').addEventListener(t, () => { dateTouched = $('date').value !== ''; if (!dateTouched) refreshDate(); });
+
 async function submitLog() {
+  refreshDate();
   if (!ready()) return;
   st.busy = true; paintLog();   // one tap, one entry: the button stays off until the answer
   const msg = $('logMsg');
   msg.className = 'msg muted'; msg.textContent = 'Logging…';
   const body = st.desc ? { description: $('desc').value.trim(), project_id: $('project').value } : { card_url: st.card.url };
   body.args = timeArgs();
-  body.date = $('date').value === today() ? '' : $('date').value;
+  body.date = dateTouched ? $('date').value : '';
   body.dry_run = DRY;
   try {
     const o = await api('/api/log', body);
@@ -352,11 +359,11 @@ async function send() {
 $('sendBtn').addEventListener('click', send);
 $('prompt').addEventListener('keydown', (ev) => { if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey)) { ev.preventDefault(); send(); } });
 $('stopBtn').addEventListener('click', () => api('/api/ask/stop', {}).catch(() => {}));
-document.addEventListener('visibilitychange', () => { if (!document.hidden && ask.running) follow(); });
+document.addEventListener('visibilitychange', () => { if (document.hidden) return; refreshDate(); if (ask.running) follow(); });
 
 // ---- Start ----
 if (matchMedia('(pointer: coarse)').matches) for (const k of document.querySelectorAll('.k')) k.hidden = true;
-$('date').value = today();
+refreshDate();
 paintLog(); refreshChips(); loadTotals(); follow();
 </script>
 </body>

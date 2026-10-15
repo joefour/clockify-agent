@@ -3,138 +3,225 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="color-scheme" content="dark">
-<meta name="theme-color" content="#1d2230">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" id="themeColor" content="#fff">
 <title>Clockify</title>
+<script>
+// Before first paint, so the page never flashes the wrong theme. No saved choice means Auto.
+try { const t = localStorage.getItem('clockify-theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch {}
+</script>
 <style>
-  :root { --accent: #D97757; --ink: #ececec; --muted: #9a9a9a; --line: rgba(255,255,255,.12); --fill: rgba(255,255,255,.06); --ok: #9fd8a6; --err: #ff6b61; }
+  /* claude-usage's Swiss sheet: one grotesque, ink on paper, Swiss-flag red as the only accent. */
+  :root { color-scheme: light dark; --paper: #fff; --ink: #111; --muted: #5c5c5c; --hair: #d4d4d4; --track: #e6e6e6; --soft: #f2f2f2; --red: #da291c; --red-ink: #da291c; --on-red: #fff; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --paper: #0d0d0d; --ink: #f2f2f2; --muted: #a3a3a3; --hair: #333; --track: #2a2a2a; --soft: #1c1c1c; --red-ink: #ff6a5c; } }
+  :root[data-theme="light"] { color-scheme: light; }
+  :root[data-theme="dark"] { color-scheme: dark; --paper: #0d0d0d; --ink: #f2f2f2; --muted: #a3a3a3; --hair: #333; --track: #2a2a2a; --soft: #1c1c1c; --red-ink: #ff6a5c; }
   * { box-sizing: border-box; }
-  html { background: #141821; }
-  body { margin: 0; min-height: 100vh; padding: 16px 16px calc(16px + env(safe-area-inset-bottom)); color: var(--ink);
-         font: 13px/1.45 -apple-system, system-ui, sans-serif; -webkit-font-smoothing: antialiased;
-         background: radial-gradient(120% 120% at 0% 0%, #3b4a63 0%, #1d2230 55%, #141821 100%) fixed; }
-  main { max-width: 980px; margin: 0 auto; display: grid; gap: 16px; }
-  .col { display: grid; gap: 16px; align-content: start; min-width: 0; }
-  @media (min-width: 760px) { main { grid-template-columns: 1fr 1fr; } }
-  /* Frosted, as agent-ask's panel: heavy blur under an ~85% dark tint. */
-  .hud { position: relative; background: rgba(30,30,32,.86); -webkit-backdrop-filter: blur(40px) saturate(1.4); backdrop-filter: blur(40px) saturate(1.4);
-         border: 1px solid rgba(255,255,255,.14); border-radius: 16px; box-shadow: 0 18px 40px rgba(0,0,0,.45); }
-  .hd { display: flex; gap: 10px; align-items: center; padding: 12px 14px 8px; }
-  .ring { width: 30px; height: 30px; border-radius: 50%; flex: none; display: grid; place-items: center; font-size: 13px; position: relative;
-          background: conic-gradient(var(--accent) 0 var(--p, 100%), rgba(255,255,255,.12) var(--p, 100%) 100%); }
-  .ring::before { content: ""; position: absolute; inset: 3px; border-radius: 50%; background: #262628; }
-  .ring span { position: relative; }
-  .ttl { font-weight: 600; font-size: 13.5px; }
-  .chips { display: flex; gap: 5px; margin-top: 3px; flex-wrap: wrap; }
-  .chip { font-size: 10.5px; padding: 1px 7px; border-radius: 99px; background: rgba(255,255,255,.09); color: #bdbdbd; font-variant-numeric: tabular-nums; }
-  .chip.t { color: #e9a58c; background: rgba(217,119,87,.16); }
-  .sp { flex: 1; }
-  .bd { padding: 2px 14px 12px; }
-  .lbl { font: 600 10px/1 -apple-system, system-ui; letter-spacing: .07em; text-transform: uppercase; color: #8d8d8d; margin: 12px 0 6px; }
-  /* 16px text: iOS zooms into smaller fields. */
-  input, select, textarea { width: 100%; font: 16px/1.3 -apple-system, system-ui; color: var(--ink); padding: 8px 10px; border-radius: 8px;
-         background: var(--fill); border: 1px solid var(--line); outline: none; color-scheme: dark; }
-  input:focus, select:focus, textarea:focus { border-color: rgba(217,119,87,.75); }
-  textarea { resize: vertical; min-height: 64px; }
-  .search { position: relative; }
-  .menu { position: absolute; z-index: 5; left: 0; right: 0; top: calc(100% + 4px); background: #2f2f32; border: 1px solid rgba(255,255,255,.14);
-          border-radius: 9px; padding: 4px; box-shadow: 0 10px 24px rgba(0,0,0,.4); max-height: 320px; overflow-y: auto; }
-  .menu button { display: block; width: 100%; text-align: left; padding: 7px 8px; border-radius: 6px; border: 0; background: none; color: var(--ink);
-                 font: 13px -apple-system, system-ui; cursor: pointer; }
-  .menu button.h { background: var(--accent); color: #fff; }
-  .menu small, .sel small { display: block; opacity: .75; font-size: 11px; margin-top: 1px; }
-  .menu .none { padding: 7px 8px; color: var(--muted); }
-  .sel { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 9px; background: rgba(217,119,87,.14); border: 1px solid var(--accent); }
-  .sel small { color: #c9a596; }
-  .x { margin-left: auto; background: none; border: 0; color: #c9a596; font-size: 15px; cursor: pointer; padding: 2px 4px; }
-  .pills { display: flex; gap: 6px; flex-wrap: wrap; }
-  .pill { font: 500 13px -apple-system, system-ui; padding: 6px 12px; border-radius: 99px; background: rgba(255,255,255,.07); border: 1px solid var(--line);
-          color: #ddd; cursor: pointer; font-variant-numeric: tabular-nums; }
-  .pill.on { background: rgba(217,119,87,.18); border-color: var(--accent); color: #f3c3b0; }
-  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-  .ft { display: flex; gap: 6px; align-items: center; padding: 9px 12px; background: rgba(255,255,255,.03); border-top: 1px solid rgba(255,255,255,.09);
-        border-radius: 0 0 16px 16px; }
-  .b { font: 500 13px -apple-system, system-ui; padding: 7px 12px; border-radius: 8px; background: rgba(255,255,255,.08); border: 1px solid var(--line);
-       color: var(--ink); cursor: pointer; white-space: nowrap; display: inline-flex; gap: 6px; align-items: center; }
-  .b.p { background: var(--accent); border-color: var(--accent); color: #fff; }
-  .b.g { background: none; border-color: transparent; color: #b8b8b8; padding-left: 4px; }
-  .b:disabled { opacity: .4; cursor: default; }
-  .k { font: 500 10px ui-monospace, Menlo, monospace; opacity: .85; }
-  .msg { font-size: 12.5px; margin-top: 10px; overflow-wrap: anywhere; }
-  .msg.ok { color: var(--ok); }
-  .msg.err { color: var(--err); }
-  .msg a { color: #e9a58c; }
-  .muted { color: var(--muted); }
-  .seg { display: inline-flex; background: rgba(255,255,255,.06); border-radius: 7px; padding: 2px; gap: 2px; }
-  .seg button { font: 12px -apple-system, system-ui; padding: 3px 9px; border-radius: 5px; border: 0; background: none; color: #aaa; cursor: pointer; }
-  .seg button.on { background: rgba(255,255,255,.14); color: var(--ink); }
-  .tot { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; font-size: 13px; }
-  .tot .n { font-variant-numeric: tabular-nums; text-align: right; }
-  .tot .sub { color: #9a9a9a; padding-left: 10px; font-size: 12px; overflow-wrap: anywhere; }
-  .tot .sum { border-top: 1px solid rgba(255,255,255,.1); padding-top: 5px; font-weight: 600; }
-  .asked { font-size: 12px; color: var(--muted); margin-top: 10px; overflow-wrap: anywhere; }
-  .reply { font-size: 13px; margin-top: 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
-  .reply.err { color: var(--err); }
-  .tool { font-size: 11px; color: #9a9a9a; margin: 8px 0 4px; }
-  .code { font: 12px/1.45 ui-monospace, Menlo, monospace; background: rgba(255,255,255,.08); border-radius: 9px; padding: 8px 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
-  #log { z-index: 1; }   /* the search menu must paint over the Totals card below it on a phone */
+  body { margin: 0; background: var(--paper); color: var(--ink); font: 15px/1.4 "Helvetica Neue", Helvetica, Arial, sans-serif; font-variant-numeric: tabular-nums; -webkit-text-size-adjust: 100%; -webkit-font-smoothing: antialiased; }
+  main { max-width: 1240px; margin: 0 auto; padding: 32px 24px calc(64px + env(safe-area-inset-bottom)); }
+  ::selection { background: var(--red); color: var(--on-red); }
+  :focus-visible { outline: 2px solid var(--red-ink); outline-offset: 2px; }
+  h1, h2 { margin: 0; font-weight: 700; letter-spacing: -.02em; }
   [hidden] { display: none !important; }
+
+  /* Masthead: mark and name left; totals, theme and Refresh right. */
+  .masthead { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 24px; padding-bottom: 16px; }
+  .brand { display: flex; align-items: center; gap: 12px; }
+  h1 { font-size: 28px; line-height: 1; }
+  /* The mark: outer ring today of 8:00, inner ring the week of 40:00. */
+  .mark { width: 30px; height: 30px; flex: none; }
+  .mark circle { fill: none; stroke-width: 5; }
+  .mark .trk { stroke: var(--track); }
+  .mark .o { stroke: var(--ink); }
+  .mark .i { stroke: var(--red-ink); }
+  .tools { display: flex; align-items: center; gap: 16px; margin-left: auto; }
+  .meta { margin: 0; color: var(--muted); font-size: 13px; text-align: right; }
+  .meta b { color: var(--ink); }
+  .meta span + span::before { content: " · "; }
+
+  /* Buttons: square, ink outline; red for the action the page asks for. */
+  .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 36px; padding: 6px 14px; font: inherit; font-size: 13px; font-weight: 700; color: var(--ink); background: transparent; border: 2px solid var(--ink); border-radius: 0; cursor: pointer; white-space: nowrap; }
+  @media (hover: hover) { .btn:hover:not(:disabled) { background: var(--ink); color: var(--paper); } }
+  .btn.primary { background: var(--red); border-color: var(--red); color: var(--on-red); }
+  @media (hover: hover) { .btn.primary:hover:not(:disabled) { background: var(--ink); border-color: var(--ink); color: var(--paper); } }
+  .btn.sm { min-height: 26px; padding: 2px 8px; font-size: 11px; border-width: 1px; }
+  .btn.on { background: var(--ink); color: var(--paper); }
+  .btn.ghost { border-color: transparent; color: var(--muted); padding-left: 0; }
+  .btn:disabled { opacity: .4; cursor: default; }
+  @media (pointer: coarse) { .btn { min-height: 44px; } .btn.sm { min-height: 32px; } }
+  .k { font: 500 10px ui-monospace, Menlo, monospace; opacity: .85; }
+  .cycle { display: none; }
+
+  /* Segments: the theme toggle and the Hours period switch. */
+  .seg { display: inline-flex; }
+  .seg button { font: inherit; font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; padding: 5px 9px 4px; margin-right: -1px; border: 1px solid var(--ink); border-radius: 0; background: none; color: var(--ink); cursor: pointer; }
+  .seg button.on { background: var(--ink); color: var(--paper); }
+
+  /* Tabs sit on the masthead's heavy rule; the active one is inked. */
+  .tabs { display: flex; border-bottom: 4px solid var(--ink); }
+  .tabs button { font: inherit; font-size: 15px; font-weight: 700; letter-spacing: -.01em; padding: 8px 18px 7px; border: 0; border-radius: 0; background: none; color: var(--muted); cursor: pointer; }
+  .tabs button[aria-selected="true"] { background: var(--ink); color: var(--paper); }
+
+  .cols { display: grid; gap: 0 32px; }
+  @media (min-width: 760px) { .cols { grid-template-columns: 1fr 1fr; } }
+  .sec { margin: 28px 0 0; font-size: 18px; padding-bottom: 8px; border-bottom: 4px solid var(--ink); display: flex; justify-content: space-between; align-items: flex-end; }
+  .clock { font-size: 11px; font-weight: 700; letter-spacing: .06em; padding: 3px 6px 2px; background: var(--red); color: var(--on-red); }
+  .lbl { display: block; margin: 14px 0 6px; font-size: 11px; font-weight: 500; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+  /* 16px text: iOS zooms into smaller fields. */
+  input, select, textarea { width: 100%; font: 16px/1.3 "Helvetica Neue", Helvetica, Arial, sans-serif; color: var(--ink); background: var(--paper); padding: 8px 10px; border: 2px solid var(--ink); border-radius: 0; outline: none; }
+  input[type="search"] { -webkit-appearance: none; appearance: none; }
+  input:focus, select:focus, textarea:focus { outline: 2px solid var(--red-ink); outline-offset: 2px; }
+  input::placeholder, textarea::placeholder { color: var(--muted); }
+  textarea { resize: vertical; min-height: 72px; margin-top: 14px; }
+
+  .search { position: relative; z-index: 2; }
+  .menu { position: absolute; left: 0; right: 0; top: 100%; background: var(--paper); border: 2px solid var(--ink); border-top: 0; max-height: 320px; overflow-y: auto; }
+  .it { display: flex; align-items: center; gap: 10px; padding-right: 9px; border-top: 1px solid var(--hair); }
+  .it:first-child { border-top: 0; }
+  .it .go { flex: 1; min-width: 0; text-align: left; padding: 8px 9px; border: 0; background: none; color: inherit; font: inherit; font-size: 14px; cursor: pointer; overflow-wrap: anywhere; }
+  .it small, .pick small { display: block; color: var(--muted); font-size: 12px; margin-top: 1px; }
+  .it.h { background: var(--ink); color: var(--paper); }
+  .it.h small { color: var(--paper); opacity: .7; }
+  .it.h .btn { border-color: var(--paper); color: var(--paper); }
+  .menu .none { padding: 8px 9px; color: var(--muted); }
+  .pick { display: flex; align-items: center; gap: 8px; border: 2px solid var(--ink); padding: 7px 9px; }
+  .pick .t { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .x { background: none; border: 0; color: var(--ink); font-size: 16px; cursor: pointer; padding: 2px 4px; }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { font: inherit; font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; padding: 7px 11px 6px; border: 1px solid var(--ink); border-radius: 0; background: none; color: var(--ink); cursor: pointer; }
+  .chip.on { background: var(--ink); color: var(--paper); }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .actions { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; margin-top: 16px; }
+  .actions.end { justify-content: flex-end; }
+  .msg { margin-top: 12px; font-size: 13px; overflow-wrap: anywhere; }
+  .msg.ok { font-weight: 700; }
+  .msg.err { color: var(--red-ink); font-weight: 700; }
+  .msg.muted { color: var(--muted); }
+  .msg a { color: var(--red-ink); }
+  .msg .muted { color: var(--muted); font-weight: 400; }
+
+  .asked { color: var(--muted); font-size: 13px; margin-top: 14px; overflow-wrap: anywhere; }
+  .reply { margin-top: 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .reply.err { color: var(--red-ink); }
+  .tool { margin-top: 12px; font-size: 11px; font-weight: 500; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+  /* Commands are the one place a second family appears: they must read as typed. */
+  .code { margin-top: 4px; padding: 8px 10px; background: var(--soft); font: 12.5px/1.45 ui-monospace, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+  .figs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px 24px; padding: 20px 0; border-bottom: 1px solid var(--ink); }
+  .figs .lbl { margin: 0 0 6px; }
+  .fig { font-size: 34px; font-weight: 700; line-height: 1; letter-spacing: -.02em; }
+  .bar { height: 4px; margin: 10px 0 6px; background: var(--track); overflow: hidden; }
+  .bar i { display: block; height: 100%; width: 0; background: var(--ink); }
+  .small { color: var(--muted); font-size: 12px; }
+  #seg { margin-top: 20px; }
+  table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+  td { padding: 9px 0; border-bottom: 1px solid var(--hair); overflow-wrap: anywhere; }
+  td.n { text-align: right; white-space: nowrap; padding-left: 12px; }
+  tr.p td { font-weight: 700; border-bottom-color: var(--ink); }
+  tr.s td { color: var(--muted); font-size: 14px; }
+  tr.s td:first-child { padding-left: 14px; }
+  tr.t td { font-weight: 700; font-size: 17px; border-top: 4px solid var(--ink); border-bottom: 0; }
+
+  @media (max-width: 640px) {
+    main { padding: 20px 16px calc(48px + env(safe-area-inset-bottom)); }
+    h1 { font-size: 22px; }
+    .mark { width: 24px; height: 24px; }
+    .meta { font-size: 12px; }
+    .meta span { display: block; }
+    .meta span + span::before { content: none; }
+    #theme, #refresh { display: none; }
+    .cycle { display: inline-flex; }
+    .tabs button { flex: 1; }
+    .figs { gap: 12px; }
+    .fig { font-size: 24px; }
+    #log .actions .btn.primary { order: -1; flex-basis: 100%; }
+    #log .actions .ghost { margin: 0 auto; padding-left: 14px; }
+    #ask .actions .btn { flex: 1; }
+  }
 </style>
 </head>
 <body>
 <main>
-  <div class="col">
-    <section class="hud" id="log" aria-label="Log time">
-      <div class="hd"><div class="ring" style="--p:44%"><span>⏱</span></div>
-        <div><div class="ttl">Log time</div>
-          <div class="chips"><span class="chip t" id="chipToday">Today –</span><span class="chip" id="chipWeek">Week –</span><span class="chip">VNT</span></div></div></div>
-      <div class="bd">
-        <div id="ticketBox">
-          <div class="lbl">Ticket</div>
-          <div class="search" id="searchBox">
-            <input id="q" type="search" placeholder="Search Trello cards" autocomplete="off" aria-label="Search Trello cards" aria-controls="menu">
-            <div class="menu" id="menu" role="listbox" hidden></div>
-          </div>
-          <div class="sel" id="sel" hidden><div><span id="selName"></span><small id="selBoard"></small></div><button class="x" id="clear" type="button" aria-label="Clear ticket">✕</button></div>
+  <header class="masthead">
+    <div class="brand">
+      <svg class="mark" viewBox="0 0 32 32" aria-hidden="true"><circle class="trk" cx="16" cy="16" r="12"/><circle class="trk" cx="16" cy="16" r="5.5"/><circle class="o" id="ringDay" cx="16" cy="16" r="12" pathLength="100" stroke-dasharray="0 100" transform="rotate(-90 16 16)"/><circle class="i" id="ringWeek" cx="16" cy="16" r="5.5" pathLength="100" stroke-dasharray="0 100" transform="rotate(-90 16 16)"/></svg>
+      <h1>Clockify</h1>
+    </div>
+    <div class="tools">
+      <p class="meta" aria-live="polite"><span>Today <b id="mastToday">–</b></span><span>Week <b id="mastWeek">–</b></span></p>
+      <div class="seg" id="theme" role="group" aria-label="Theme"><button type="button" data-t="auto">Auto</button><button type="button" data-t="light">Light</button><button type="button" data-t="dark">Dark</button></div>
+      <button class="btn sm cycle" id="themeCycle" type="button" aria-label="Theme, tap to change">◐ Auto</button>
+      <button class="btn" id="refresh" type="button">Refresh</button>
+    </div>
+  </header>
+  <nav class="tabs" role="tablist" aria-label="Views">
+    <button type="button" role="tab" id="tabClock" aria-controls="clock" aria-selected="true">Clock</button>
+    <button type="button" role="tab" id="tabHours" aria-controls="hours" aria-selected="false">Hours</button>
+  </nav>
+
+  <div class="cols" id="clock" role="tabpanel" aria-labelledby="tabClock">
+    <section id="log" aria-label="Log time">
+      <h2 class="sec">Log time</h2>
+      <div id="ticketBox">
+        <label class="lbl" for="q">Ticket</label>
+        <div class="search" id="searchBox">
+          <input id="q" type="search" placeholder="Search a ticket or paste a Trello link" autocomplete="off" aria-controls="menu">
+          <div class="menu" id="menu" role="listbox" hidden></div>
         </div>
-        <div id="descBox" hidden>
-          <div class="lbl">Description</div>
-          <input id="desc" placeholder="What you worked on" autocomplete="off" aria-label="Description">
+        <div class="pick" id="sel" hidden>
+          <div class="t"><span id="selName"></span><small id="selBoard"></small></div>
+          <button class="btn sm" id="copySel" type="button">Copy link</button>
+          <button class="x" id="clear" type="button" aria-label="Clear ticket">✕</button>
         </div>
-        <div id="projBox" hidden>
-          <div class="lbl">Project</div>
-          <select id="project" aria-label="Project"><option value="">Loading projects…</option></select>
-        </div>
-        <div class="lbl">Duration</div>
-        <div class="pills" id="pills">
-          <button class="pill" type="button" data-d="30m">30m</button><button class="pill" type="button" data-d="45m">45m</button><button class="pill" type="button" data-d="1h">1h</button>
-          <button class="pill" type="button" data-d="2h">2h</button><button class="pill" type="button" data-d="4h">4h</button><button class="pill" type="button" data-d="8h">8h</button>
-          <button class="pill" type="button" data-d="other">Other…</button>
-        </div>
-        <input id="other" placeholder="1h45m · 09:00 11:30 · 4h ago 1h" autocomplete="off" aria-label="Other time" hidden style="margin-top:6px">
-        <div class="lbl">Start · Date</div>
-        <div class="two"><input id="start" type="time" aria-label="Start time (empty: ends now)"><input id="date" type="date" aria-label="Date"></div>
-        <div class="msg" id="logMsg" role="status"></div>
       </div>
-      <div class="ft"><button class="b g" id="mode" type="button">Description instead</button><span class="sp"></span><button class="b p" id="logBtn" type="button" disabled>Log <span class="k">⌘↩</span></button></div>
+      <div id="descBox" hidden>
+        <label class="lbl" for="desc">Description</label>
+        <input id="desc" placeholder="What you worked on" autocomplete="off">
+      </div>
+      <div id="projBox" hidden>
+        <label class="lbl" for="project">Project</label>
+        <select id="project"><option value="">Loading projects…</option></select>
+      </div>
+      <span class="lbl">Duration</span>
+      <div class="chips" id="pills">
+        <button class="chip" type="button" data-d="30m">30m</button><button class="chip" type="button" data-d="45m">45m</button><button class="chip" type="button" data-d="1h">1h</button>
+        <button class="chip" type="button" data-d="2h">2h</button><button class="chip" type="button" data-d="4h">4h</button><button class="chip" type="button" data-d="8h">8h</button>
+        <button class="chip" type="button" data-d="other">Other</button>
+      </div>
+      <input id="other" placeholder="1h45m · 09:00 11:30 · 4h ago 1h" autocomplete="off" aria-label="Other time" hidden style="margin-top:8px">
+      <div class="two">
+        <div id="startBox"><label class="lbl" for="start">Start</label><input id="start" type="time" aria-label="Start time (empty: ends now)"></div>
+        <div><label class="lbl" for="date">Date</label><input id="date" type="date"></div>
+      </div>
+      <div class="actions">
+        <button class="btn ghost" id="mode" type="button">Description instead</button>
+        <button class="btn primary" id="logBtn" type="button" disabled>Log <span class="k">⌘↩</span></button>
+      </div>
+      <div class="msg" id="logMsg" role="status"></div>
+    </section>
+
+    <section id="ask" aria-label="Ask Claude">
+      <h2 class="sec">Ask Claude <span class="clock" id="askClock" hidden>0:00</span></h2>
+      <textarea id="prompt" placeholder="log yesterday 9–12 to the SSO card" aria-label="Prompt"></textarea>
+      <div class="actions end">
+        <button class="btn" id="stopBtn" type="button" hidden>Stop</button>
+        <button class="btn primary" id="sendBtn" type="button">Send <span class="k">⌘↩</span></button>
+      </div>
+      <div class="asked" id="asked"></div>
+      <div id="reply" aria-live="polite"></div>
     </section>
   </div>
-  <div class="col">
-    <section class="hud" id="totals" aria-label="Totals">
-      <div class="hd"><div class="ttl">Totals</div><span class="sp"></span>
-        <div class="seg" id="seg"><button type="button" data-p="today" class="on">Today</button><button type="button" data-p="this-week">Week</button><button type="button" data-p="this-month">Month</button></div></div>
-      <div class="bd"><div class="tot" id="tot"></div><div class="msg err" id="totMsg"></div></div>
-    </section>
-    <section class="hud" id="ask" aria-label="Ask Claude">
-      <div class="hd"><div class="ring"><span>✳</span></div>
-        <div><div class="ttl">Ask Claude</div><div class="chips"><span class="chip">sonnet 5.5</span><span class="chip t" id="askClock" hidden>0:00</span></div></div></div>
-      <div class="bd">
-        <textarea id="prompt" placeholder="log yesterday 9–12 to the SSO card" aria-label="Prompt"></textarea>
-        <div class="asked" id="asked"></div>
-        <div id="reply" aria-live="polite"></div>
-      </div>
-      <div class="ft"><span class="sp"></span><button class="b" id="stopBtn" type="button" hidden>Stop</button><button class="b p" id="sendBtn" type="button">Send <span class="k">⌘↩</span></button></div>
-    </section>
+
+  <div id="hours" role="tabpanel" aria-labelledby="tabHours" hidden>
+    <div class="figs">
+      <div><span class="lbl">Today</span><div class="fig" id="figToday">–</div><div class="bar"><i id="barToday"></i></div><span class="small" id="ofToday"></span></div>
+      <div><span class="lbl">This week</span><div class="fig" id="figWeek">–</div><div class="bar"><i id="barWeek"></i></div><span class="small" id="ofWeek"></span></div>
+      <div><span class="lbl">This month</span><div class="fig" id="figMonth">–</div><div class="bar"><i id="barMonth"></i></div><span class="small" id="ofMonth"></span></div>
+    </div>
+    <div class="seg" id="seg" role="group" aria-label="Period"><button type="button" data-p="today" class="on">Today</button><button type="button" data-p="this-week">Week</button><button type="button" data-p="this-month">Month</button></div>
+    <table><tbody id="tot"></tbody></table>
+    <div class="msg err" id="hoursMsg" role="status"></div>
   </div>
 </main>
 <script>
@@ -156,6 +243,37 @@ async function api(path, body) {
   return data;
 }
 
+// ---- Theme ----
+// Auto removes data-theme so the CSS media query decides; Light and Dark pin it.
+const THEME_KEY = 'clockify-theme';
+const THEME_NEXT = { auto: 'light', light: 'dark', dark: 'auto' };
+const THEME_LABEL = { auto: '◐ Auto', light: '☀ Light', dark: '☾ Dark' };
+const theme = () => document.documentElement.dataset.theme || 'auto';
+function setTheme(t) {
+  if (t === 'auto') delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = t;
+  try { if (t === 'auto') localStorage.removeItem(THEME_KEY); else localStorage.setItem(THEME_KEY, t); } catch {}
+  paintTheme();
+}
+function paintTheme() {
+  const t = theme();
+  for (const b of $('theme').children) b.classList.toggle('on', b.dataset.t === t);
+  $('themeCycle').textContent = THEME_LABEL[t];
+  $('themeColor').content = getComputedStyle(document.documentElement).getPropertyValue('--paper').trim();
+}
+$('theme').addEventListener('click', (ev) => { const t = ev.target.closest('button')?.dataset.t; if (t) setTheme(t); });
+$('themeCycle').addEventListener('click', () => setTheme(THEME_NEXT[theme()]));
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', paintTheme);
+
+// ---- Tabs ----
+function showTab(name) {
+  for (const [tab, panel] of [['tabClock', 'clock'], ['tabHours', 'hours']]) {
+    $(tab).setAttribute('aria-selected', String(panel === name));
+    $(panel).hidden = panel !== name;
+  }
+}
+$('tabClock').addEventListener('click', () => showTab('clock'));
+$('tabHours').addEventListener('click', () => showTab('hours'));
+
 // ---- Log ----
 const st = { card: null, desc: false, dur: null, hits: [], hi: -1, busy: false, projects: false };
 
@@ -173,21 +291,35 @@ function paintLog() {
   $('logBtn').firstChild.textContent = st.dur && st.dur !== 'other' ? `Log ${st.dur} ` : 'Log ';
   for (const p of $('pills').children) p.classList.toggle('on', p.dataset.d === st.dur);
   $('other').hidden = st.dur !== 'other';
-  $('start').hidden = st.dur === 'other';
+  $('startBox').hidden = st.dur === 'other';
   $('ticketBox').hidden = st.desc;
   $('descBox').hidden = !st.desc;
   $('projBox').hidden = !needsProject();
   $('mode').textContent = st.desc ? 'Ticket instead' : 'Description instead';
   $('searchBox').hidden = Boolean(st.card);
   $('sel').hidden = !st.card;
-  if (st.card) { $('selName').textContent = `#${st.card.number} ${st.card.name}`; $('selBoard').textContent = st.card.board; }
+  if (st.card) {
+    $('selName').textContent = `#${st.card.number} ${st.card.name}`;
+    $('selBoard').textContent = st.card.pasted ? `${st.card.board} · from pasted link` : st.card.board;
+  }
 }
 
+// Both listeners are secure contexts (loopback, HTTPS over Tailscale), so the clipboard API is there.
+async function copyLink(btn, url) {
+  clearTimeout(btn.copyTimer);
+  try { await navigator.clipboard.writeText(url); btn.textContent = 'Copied ✓'; btn.classList.add('on'); }
+  catch { btn.textContent = 'Copy failed'; }
+  btn.copyTimer = setTimeout(() => { btn.textContent = 'Copy link'; btn.classList.remove('on'); }, 2000);
+}
+
+// A pasted card link resolves to its card; the server checks the link the same way.
+const CARD_LINK = /^https?:\/\/(www\.)?trello\.com\/c\/[A-Za-z0-9]+/;
 let searchTimer, searchSeq = 0;
 $('q').addEventListener('input', () => {
   clearTimeout(searchTimer);
   const q = $('q').value.trim();
-  if (q.length < 2) { closeMenu(); return; }
+  if (CARD_LINK.test(q)) { resolveLink(q); return; }
+  if (q.length < 2) { ++searchSeq; closeMenu(); return; }
   searchTimer = setTimeout(async () => {
     const seq = ++searchSeq;
     try {
@@ -197,18 +329,33 @@ $('q').addEventListener('input', () => {
   }, 250);
 });
 
-function showMenu(hits, error) {
+async function resolveLink(link) {
+  const seq = ++searchSeq;
+  showMenu([], 'Looking up the card…');
+  try {
+    const hit = await api(`/api/card?url=${encodeURIComponent(link)}`);
+    if (seq === searchSeq) pick({ ...hit, pasted: true });
+  } catch (e) { if (seq === searchSeq) showMenu([], e.message); }
+}
+
+function showMenu(hits, note) {
   st.hits = hits; st.hi = hits.length ? 0 : -1;
   const m = $('menu');
   m.replaceChildren(); m.hidden = false;
-  if (!hits.length) { m.append(el('div', 'none', error || 'No open cards match')); return; }
+  if (!hits.length) { m.append(el('div', 'none', note || 'No open cards match')); return; }
   hits.forEach((h, i) => {
-    const b = el('button', i === st.hi ? 'h' : '', `#${h.number} ${h.name}`);
-    b.type = 'button'; b.setAttribute('role', 'option');
-    b.append(el('small', '', h.board));
-    b.addEventListener('mousedown', (ev) => ev.preventDefault());   // keep focus in the field
-    b.addEventListener('click', () => pick(h));
-    m.append(b);
+    const row = el('div', i === st.hi ? 'it h' : 'it');
+    row.setAttribute('role', 'option');
+    const go = el('button', 'go', `#${h.number} ${h.name}`);
+    go.type = 'button';
+    go.append(el('small', '', h.board));
+    go.addEventListener('click', () => pick(h));
+    const copy = el('button', 'btn sm', 'Copy link');
+    copy.type = 'button';
+    copy.addEventListener('click', () => copyLink(copy, h.url));
+    for (const b of [go, copy]) b.addEventListener('mousedown', (ev) => ev.preventDefault());   // keep focus in the field
+    row.append(go, copy);
+    m.append(row);
   });
 }
 function closeMenu() { $('menu').hidden = true; st.hits = []; st.hi = -1; }
@@ -219,15 +366,16 @@ $('q').addEventListener('keydown', (ev) => {
   if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
     ev.preventDefault();
     st.hi = (st.hi + (ev.key === 'ArrowDown' ? 1 : -1) + st.hits.length) % st.hits.length;
-    [...$('menu').children].forEach((b, i) => b.classList.toggle('h', i === st.hi));
+    [...$('menu').children].forEach((r, i) => r.classList.toggle('h', i === st.hi));
   } else if (ev.key === 'Enter' && !(ev.metaKey || ev.ctrlKey)) { ev.preventDefault(); pick(st.hits[st.hi]); }
   else if (ev.key === 'Escape') closeMenu();
 });
 $('q').addEventListener('blur', () => setTimeout(closeMenu, 150));
 $('clear').addEventListener('click', () => { st.card = null; paintLog(); $('q').focus(); });
+$('copySel').addEventListener('click', () => copyLink($('copySel'), st.card.url));
 
 $('pills').addEventListener('click', (ev) => {
-  const d = ev.target.closest('.pill')?.dataset.d;
+  const d = ev.target.closest('.chip')?.dataset.d;
   if (!d) return;
   st.dur = d; paintLog();
   if (d === 'other') $('other').focus();
@@ -279,43 +427,69 @@ async function submitLog() {
     msg.append(el('div', '', line));
     if (o.link) { const a = el('a', '', 'Open in Clockify ↗'); a.href = o.link; a.target = '_blank'; a.rel = 'noopener'; msg.append(a); }
     for (const w of o.warnings) msg.append(el('div', 'muted', w));
-    refreshChips(); loadTotals();
+    loadHours();
   } catch (e) { msg.className = 'msg err'; msg.textContent = e.message; }
   st.busy = false; paintLog();
 }
 $('logBtn').addEventListener('click', submitLog);
 $('log').addEventListener('keydown', (ev) => { if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey)) { ev.preventDefault(); submitLog(); } });
 
-// ---- Totals ----
-let preset = 'today';
-async function loadTotals() {
-  const p = preset;
-  try {
-    const s = await api(`/api/totals?preset=${p}`);
-    if (p !== preset) return;
-    $('totMsg').textContent = '';
-    const t = $('tot');
-    t.replaceChildren();
-    for (const proj of s.projects) {
-      t.append(el('span', '', proj.name), el('span', 'n', hm(proj.duration)));
-      for (const task of proj.tasks) t.append(el('span', 'sub', task.name), el('span', 'sub n', hm(task.duration)));
-    }
-    if (!s.projects.length) t.append(el('span', 'muted', 'Nothing logged'), el('span', 'n muted', '0:00'));
-    t.append(el('span', 'sum', 'Total'), el('span', 'sum n', hm(s.total)));
-  } catch (e) { $('totMsg').textContent = e.message; }
+// ---- Hours ----
+const PRESETS = [['today', 'Today'], ['this-week', 'Week'], ['this-month', 'Month']];
+const DAY = 8 * 3600;
+// shortcut: the 8:00-a-weekday targets are page constants; move them to the config if they ever need to differ.
+function weekdaysThisMonth() {
+  const now = new Date(), y = now.getFullYear(), m = now.getMonth(), days = new Date(y, m + 1, 0).getDate();
+  let n = 0;
+  for (let d = 1; d <= days; d++) { const w = new Date(y, m, d).getDay(); if (w !== 0 && w !== 6) n++; }
+  return n;
+}
+const totals = {};
+let preset = 'today', hoursSeq = 0;
+
+// One load serves the masthead, the figures and the breakdown.
+async function loadHours() {
+  const seq = ++hoursSeq;
+  const got = await Promise.allSettled(PRESETS.map(([p]) => api(`/api/totals?preset=${p}`)));
+  if (seq !== hoursSeq) return;
+  const failed = got.find((r) => r.status === 'rejected');
+  $('hoursMsg').textContent = failed ? failed.reason.message : '';
+  PRESETS.forEach(([p], i) => { if (got[i].status === 'fulfilled') totals[p] = got[i].value; });
+  paintHours();
+}
+
+function paintHours() {
+  const target = { today: DAY, 'this-week': 5 * DAY, 'this-month': weekdaysThisMonth() * DAY };
+  const pct = (p) => totals[p] ? Math.min(100, totals[p].total / target[p] * 100) : 0;
+  for (const [p, name] of PRESETS) {
+    $(`fig${name}`).textContent = totals[p] ? hm(totals[p].total) : '–';
+    $(`bar${name}`).style.width = `${pct(p)}%`;
+    $(`of${name}`).textContent = `of ${hm(target[p])}`;
+  }
+  $('mastToday').textContent = totals.today ? hm(totals.today.total) : '–';
+  $('mastWeek').textContent = totals['this-week'] ? hm(totals['this-week'].total) : '–';
+  $('ringDay').setAttribute('stroke-dasharray', `${pct('today')} 100`);
+  $('ringWeek').setAttribute('stroke-dasharray', `${pct('this-week')} 100`);
+
+  const s = totals[preset], t = $('tot');
+  t.replaceChildren();
+  if (!s) return;
+  const row = (cls, name, dur) => { const tr = el('tr', cls); tr.append(el('td', '', name), el('td', 'n', hm(dur))); return tr; };
+  for (const proj of s.projects) {
+    t.append(row('p', proj.name, proj.duration));
+    for (const task of proj.tasks) t.append(row('s', task.name, task.duration));
+  }
+  if (!s.projects.length) t.append(row('s', 'Nothing logged', 0));
+  t.append(row('t', 'Total', s.total));
 }
 $('seg').addEventListener('click', (ev) => {
   const p = ev.target.closest('button')?.dataset.p;
   if (!p) return;
   preset = p;
   for (const b of $('seg').children) b.classList.toggle('on', b.dataset.p === p);
-  loadTotals();
+  paintHours();
 });
-function refreshChips() {
-  for (const [p, id, name] of [['today', 'chipToday', 'Today'], ['this-week', 'chipWeek', 'Week']]) {
-    api(`/api/totals?preset=${p}`).then((s) => { $(id).textContent = `${name} ${hm(s.total)}`; }).catch(() => {});
-  }
-}
+$('refresh').addEventListener('click', loadHours);
 
 // ---- Ask Claude ----
 const ask = { es: null, running: false, started: 0, timer: null, gotResult: false };
@@ -366,12 +540,12 @@ async function send() {
 $('sendBtn').addEventListener('click', send);
 $('prompt').addEventListener('keydown', (ev) => { if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey)) { ev.preventDefault(); send(); } });
 $('stopBtn').addEventListener('click', () => api('/api/ask/stop', {}).catch(() => {}));
-document.addEventListener('visibilitychange', () => { if (document.hidden) return; refreshDate(); loadTotals(); refreshChips(); if (ask.running) follow(); });
+document.addEventListener('visibilitychange', () => { if (document.hidden) return; refreshDate(); loadHours(); if (ask.running) follow(); });
 
 // ---- Start ----
 if (matchMedia('(pointer: coarse)').matches) for (const k of document.querySelectorAll('.k')) k.hidden = true;
 refreshDate();
-paintLog(); refreshChips(); loadTotals(); follow();
+paintTheme(); paintLog(); loadHours(); follow();
 </script>
 </body>
 </html>

@@ -570,13 +570,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_page_has_the_three_cards() {
+    async fn the_page_has_both_tabs_and_the_theme_toggle() {
         let app = gated(router(state("http://127.0.0.1:1", "http://127.0.0.1:1")), Gate::Local);
         let resp = app.oneshot(local_get("/")).await.unwrap();
         let html = String::from_utf8(axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap().to_vec()).unwrap();
-        for id in [r#"id="log""#, r#"id="totals""#, r#"id="ask""#, "backdrop-filter: blur(40px) saturate(1.4)"] {
-            assert!(html.contains(id), "page lacks {id}");
+        for needle in [
+            r#"id="clock""#,
+            r#"id="hours""#,
+            r#"id="log""#,
+            r#"id="ask""#,
+            r#"id="theme""#,
+            "prefers-color-scheme: dark",
+            r#":root[data-theme="dark"]"#,
+            "clockify-theme",
+            "/api/card?url=",
+            "navigator.clipboard.writeText",
+        ] {
+            assert!(html.contains(needle), "page lacks {needle}");
         }
+        assert!(!html.contains("backdrop-filter"), "the Glass HUD is gone");
         assert!(!html.contains("innerHTML"), "server text goes in with textContent only");
     }
 }

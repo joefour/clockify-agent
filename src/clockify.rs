@@ -167,7 +167,8 @@ impl Client {
     }
 
     pub fn list_projects(&self) -> Result<Vec<Project>> {
-        self.get(&format!("/workspaces/{}/projects", self.workspace_id))
+        // page-size: the API default is 50 projects
+        self.get(&format!("/workspaces/{}/projects?page-size=1000", self.workspace_id))
     }
 
     pub fn list_tasks(&self, project_id: &str) -> Result<Vec<Task>> {
@@ -336,6 +337,7 @@ mod tests {
         let mut server = mockito::Server::new();
         server
             .mock("GET", "/workspaces/ws123/projects")
+            .match_query(Matcher::UrlEncoded("page-size".into(), "1000".into()))
             .with_body(r#"[{"id":"proj1","name":"Project 1"},{"id":"proj2","name":"Project 2"}]"#)
             .create();
         let projects = client(&server).list_projects().unwrap();
@@ -366,7 +368,7 @@ mod tests {
     #[test]
     fn bad_json_is_a_decode_error() {
         let mut server = mockito::Server::new();
-        server.mock("GET", "/workspaces/ws123/projects").with_body("not json").create();
+        server.mock("GET", "/workspaces/ws123/projects").match_query(Matcher::Any).with_body("not json").create();
         let err = client(&server).list_projects().unwrap_err();
         assert!(format!("{err:#}").starts_with("failed to decode response"), "{err:#}");
     }

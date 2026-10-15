@@ -115,6 +115,9 @@ pub struct CardHit {
     pub name: String,
     pub url: String,
     pub board: String,
+    pub board_id: String,
+    /// Whether the config maps this card's board to a Clockify project. The server sets it.
+    pub mapped: bool,
 }
 
 /// Up to 10 open cards matching `query`, from every board the token can see, through
@@ -137,7 +140,7 @@ pub fn search_cards(base: &str, query: &str, api_key: &str, token: &str) -> Resu
         #[serde(default, deserialize_with = "null_default")]
         name: String,
         #[serde(default, deserialize_with = "null_default")]
-        short_url: String,
+        url: String,
         #[serde(default)]
         closed: bool,
         #[serde(default)]
@@ -145,6 +148,8 @@ pub fn search_cards(base: &str, query: &str, api_key: &str, token: &str) -> Resu
     }
     #[derive(Deserialize)]
     struct Board {
+        #[serde(default, deserialize_with = "null_default")]
+        id: String,
         #[serde(default, deserialize_with = "null_default")]
         name: String,
     }
@@ -155,7 +160,7 @@ pub fn search_cards(base: &str, query: &str, api_key: &str, token: &str) -> Resu
         .query("modelTypes", "cards")
         .query("partial", "true")
         .query("cards_limit", "10")
-        .query("card_fields", "name,idShort,shortUrl,closed")
+        .query("card_fields", "name,idShort,url,closed")
         .query("card_board", "true")
         .query("board_fields", "name")
         .query("key", api_key)
@@ -171,12 +176,9 @@ pub fn search_cards(base: &str, query: &str, api_key: &str, token: &str) -> Resu
         .cards
         .into_iter()
         .filter(|c| !c.closed)
-        .map(|c| CardHit {
-            id: c.id,
-            number: c.id_short,
-            name: c.name,
-            url: c.short_url,
-            board: c.board.map(|b| b.name).unwrap_or_default(),
+        .map(|c| {
+            let board = c.board.unwrap_or(Board { id: String::new(), name: String::new() });
+            CardHit { id: c.id, number: c.id_short, name: c.name, url: c.url, board: board.name, board_id: board.id, mapped: false }
         })
         .collect())
 }
@@ -267,14 +269,15 @@ mod tests {
                 Matcher::UrlEncoded("modelTypes".into(), "cards".into()),
                 Matcher::UrlEncoded("partial".into(), "true".into()),
                 Matcher::UrlEncoded("cards_limit".into(), "10".into()),
+                Matcher::UrlEncoded("card_fields".into(), "name,idShort,url,closed".into()),
                 Matcher::UrlEncoded("card_board".into(), "true".into()),
                 Matcher::UrlEncoded("key".into(), "k".into()),
                 Matcher::UrlEncoded("token".into(), "t".into()),
             ]))
             .with_body(
                 r#"{"cards":[
-                    {"id":"c1","idShort":482,"name":"Login fails after SSO","shortUrl":"https://trello.com/c/AbC123","closed":false,"board":{"id":"b1","name":"RMS"}},
-                    {"id":"c2","idShort":455,"name":"Old login copy","shortUrl":"https://trello.com/c/Old1","closed":true,"board":{"id":"b1","name":"RMS"}}
+                    {"id":"c1","idShort":482,"name":"Login fails after SSO","url":"https://trello.com/c/AbC123/482-login-fails-after-sso","closed":false,"board":{"id":"b1","name":"RMS"}},
+                    {"id":"c2","idShort":455,"name":"Old login copy","url":"https://trello.com/c/Old1/455-old-login-copy","closed":true,"board":{"id":"b1","name":"RMS"}}
                 ],"boards":[]}"#,
             )
             .create();
@@ -288,10 +291,13 @@ mod tests {
                 id: "c1".into(),
                 number: 482,
                 name: "Login fails after SSO".into(),
-                url: "https://trello.com/c/AbC123".into(),
-                board: "RMS".into()
+                url: "https://trello.com/c/AbC123/482-login-fails-after-sso".into(),
+                board: "RMS".into(),
+                board_id: "b1".into(),
+                mapped: false,
             }]
         );
+        assert_eq!(extract_ids(&hits[0].url).1, hits[0].number.to_string());
     }
 
     #[test]

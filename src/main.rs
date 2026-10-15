@@ -798,6 +798,7 @@ mod tests {
             .create();
         server
             .mock("GET", "/workspaces/ws123/projects")
+            .match_query(Matcher::Any)
             .with_body(r#"[{"id":"p1","name":"RMS"},{"id":"p2","name":"Internal"}]"#)
             .create();
 
@@ -842,7 +843,7 @@ mod tests {
             .with_status(201)
             .with_body(r#"{"id":"e1","projectId":"p1","taskId":null,"description":"fix login","timeInterval":{"start":"2026-04-05T02:00:00Z","end":"2026-04-05T03:00:00Z"}}"#)
             .create();
-        server.mock("GET", "/workspaces/ws123/projects").with_body(r#"[{"id":"p1","name":"Internal"}]"#).create();
+        server.mock("GET", "/workspaces/ws123/projects").match_query(Matcher::Any).with_body(r#"[{"id":"p1","name":"Internal"}]"#).create();
 
         let o = log_entry(&cfg(), &clockify(&server), &request(&["09:00", "1h"], "fix login", "p1", false), no_fetch, now(), 0).unwrap();
 

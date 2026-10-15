@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use axum::extract::{Query, Request, State};
-use axum::http::{HeaderMap, Method, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Response};
 use axum::response::sse::{self, Sse};
@@ -85,9 +85,17 @@ async fn guard(State(gate): State<Arc<Gate>>, req: Request, next: Next) -> Respo
     }
 }
 
-/// `app` behind the guard for one listener.
+/// No other site may frame the page: a framed click on Send would start a Claude run.
+async fn no_framing(mut resp: Response) -> Response {
+    let h = resp.headers_mut();
+    h.insert("x-frame-options", HeaderValue::from_static("DENY"));
+    h.insert("content-security-policy", HeaderValue::from_static("frame-ancestors 'none'"));
+    resp
+}
+
+/// `app` behind the guard for one listener; the guard's 403s carry the headers too.
 pub fn gated(app: Router, gate: Gate) -> Router {
-    app.layer(middleware::from_fn_with_state(Arc::new(gate), guard))
+    app.layer(middleware::from_fn_with_state(Arc::new(gate), guard)).layer(middleware::map_response(no_framing))
 }
 
 /// What every handler shares. The bases are the real APIs, except in tests.
@@ -168,9 +176,15 @@ async fn search(State(s): Shared, Query(q): Query<SearchQuery>) -> Result<Json<V
     if q.chars().count() < 2 {
         return Ok(Json(Vec::new()));
     }
-    Ok(Json(
-        blocking(move || trello::search_cards(&s.trello_base, &q, &s.cfg.trello_api_key, &s.cfg.trello_token)).await?,
-    ))
+    let mut hits = blocking({
+        let s = s.clone();
+        move || trello::search_cards(&s.trello_base, &q, &s.cfg.trello_api_key, &s.cfg.trello_token)
+    })
+    .await?;
+    for hit in &mut hits {
+        hit.mapped = !s.cfg.get_clockify_project_id(&hit.board_id, &hit.board).is_empty();
+    }
+    Ok(Json(hits))
 }
 
 async fn projects(State(s): Shared) -> Result<Json<Vec<Project>>, ApiError> {
@@ -194,8 +208,20 @@ struct LogBody {
     dry_run: bool,
 }
 
+/// The page splits the time text on whitespace; "4h ago" is one argument to the CLI.
+fn join_ago(args: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for a in args {
+        match out.last_mut() {
+            Some(prev) if a == "ago" => prev.push_str(" ago"),
+            _ => out.push(a),
+        }
+    }
+    out
+}
+
 async fn log(State(s): Shared, Json(b): Json<LogBody>) -> Result<Json<LogOutcome>, ApiError> {
-    let mut args = b.args;
+    let mut args = join_ago(b.args);
     if !b.card_url.is_empty() {
         args.insert(0, b.card_url);
     }
@@ -364,6 +390,11 @@ mod tests {
                 user_id: "u1".into(),
                 trello_api_key: "tk".into(),
                 trello_token: "tt".into(),
+                project_mappings: vec![crate::config::ProjectMapping {
+                    name: "RMS".into(),
+                    trello_board_id: "b-rms".into(),
+                    clockify_project_id: "p-rms".into(),
+                }],
                 ..Default::default()
             },
             clockify_base: clockify.into(),
@@ -401,7 +432,7 @@ mod tests {
             .with_body(r#"[{"projectId":"p1","description":"Standup","timeInterval":{"start":"2026-04-05T02:00:00Z","end":"2026-04-05T02:30:00Z"}}]"#)
             .create_async()
             .await;
-        server.mock("GET", "/workspaces/ws123/projects").with_body(r#"[{"id":"p1","name":"Internal"}]"#).create_async().await;
+        server.mock("GET", "/workspaces/ws123/projects").match_query(mockito::Matcher::Any).with_body(r#"[{"id":"p1","name":"Internal"}]"#).create_async().await;
         let app = gated(router(state(&server.url(), "http://127.0.0.1:1")), Gate::Local);
 
         let (status, body) = call(app.clone(), local_get("/api/totals?preset=today")).await;
@@ -443,7 +474,7 @@ mod tests {
         let search = trello
             .mock("GET", "/search")
             .match_query(mockito::Matcher::UrlEncoded("query".into(), "login".into()))
-            .with_body(r#"{"cards":[{"id":"c1","idShort":482,"name":"Login fails","shortUrl":"https://trello.com/c/AbC123","closed":false,"board":{"name":"RMS"}}]}"#)
+            .with_body(r#"{"cards":[{"id":"c1","idShort":482,"name":"Login fails","url":"https://trello.com/c/AbC123/482-login-fails","closed":false,"board":{"id":"b-rms","name":"RMS"}},{"id":"c2","idShort":9,"name":"Login page","url":"https://trello.com/c/Zz9/9-login-page","closed":false,"board":{"id":"b-x","name":"Elsewhere"}}]}"#)
             .expect(1)
             .create_async()
             .await;
@@ -455,7 +486,34 @@ mod tests {
 
         search.assert_async().await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(body, json!([{"id": "c1", "number": 482, "name": "Login fails", "url": "https://trello.com/c/AbC123", "board": "RMS"}]));
+        assert_eq!(
+            body,
+            json!([
+                {"id": "c1", "number": 482, "name": "Login fails", "url": "https://trello.com/c/AbC123/482-login-fails", "board": "RMS", "board_id": "b-rms", "mapped": true},
+                {"id": "c2", "number": 9, "name": "Login page", "url": "https://trello.com/c/Zz9/9-login-page", "board": "Elsewhere", "board_id": "b-x", "mapped": false}
+            ])
+        );
+    }
+
+    #[test]
+    fn ago_joins_the_token_before_it() {
+        let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(join_ago(v(&["4h", "ago", "1h"])), v(&["4h ago", "1h"]));
+        assert_eq!(join_ago(v(&["09:00", "11:30"])), v(&["09:00", "11:30"]));
+        assert_eq!(join_ago(v(&["2h"])), v(&["2h"]));
+        assert_eq!(join_ago(v(&["ago", "1h"])), v(&["ago", "1h"]));
+    }
+
+    #[tokio::test]
+    async fn every_response_refuses_framing() {
+        let app = gated(router(state("http://127.0.0.1:1", "http://127.0.0.1:1")), Gate::Local);
+        let ok = app.clone().oneshot(local_get("/")).await.unwrap();
+        let bad = app.oneshot(Request::get("/").header("host", "evil.example:8767").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(bad.status(), StatusCode::FORBIDDEN);
+        for resp in [ok, bad] {
+            assert_eq!(resp.headers()["x-frame-options"], "DENY");
+            assert_eq!(resp.headers()["content-security-policy"], "frame-ancestors 'none'");
+        }
     }
 
     #[tokio::test]

@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use anyhow::{Result, bail};
 use chrono::{Datelike, Local, NaiveDate, TimeDelta};
+use serde::Serialize;
 
 use crate::clockify::{Project, TimeEntry};
 
@@ -13,13 +14,13 @@ pub struct ProjectTotal {
     pub duration: i64,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Serialize)]
 pub struct TaskTotal {
     pub name: String,
     pub duration: i64,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Serialize)]
 pub struct ProjectTasks {
     pub name: String,
     pub duration: i64,

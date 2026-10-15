@@ -448,32 +448,38 @@ fn print_log(o: &LogOutcome) {
     }
 }
 
-fn run_summary(preset: &str, from: &str, to: &str, by_task: bool) -> Result<()> {
+/// Totals for a preset or a date range, per project and per task; seconds.
+#[derive(Debug, Serialize)]
+struct SummaryOutcome {
+    label: String,
+    total: i64,
+    projects: Vec<summary::ProjectTasks>,
+}
+
+fn summarize(cfg: &Config, client: &Client, preset: &str, from: &str, to: &str) -> Result<SummaryOutcome> {
     let (start, end, label) = summary::resolve_date_range(preset, from, to)?;
-    let cfg = config::load();
-    let client = Client::new(&cfg.api_key, &cfg.workspace_id);
     let entries = client.entries_between(&cfg.user_id, &start, &end).context("Clockify API error")?;
     let projects = client.list_projects().context("Clockify API error")?;
+    let projects = summary::compute_task_breakdown(&entries, &projects);
+    Ok(SummaryOutcome { label, total: projects.iter().map(|p| p.duration).sum(), projects })
+}
 
-    println!("Summary: {label}\n");
-    let mut grand_total = 0;
-    if by_task {
-        for p in summary::compute_task_breakdown(&entries, &projects) {
-            println!("{:<35} {}", p.name, timeutil::format_duration(p.duration));
+fn run_summary(preset: &str, from: &str, to: &str, by_task: bool) -> Result<()> {
+    let cfg = config::load();
+    let client = Client::new(&cfg.api_key, &cfg.workspace_id);
+    let s = summarize(&cfg, &client, preset, from, to)?;
+    println!("Summary: {}\n", s.label);
+    for p in &s.projects {
+        println!("{:<35} {}", p.name, timeutil::format_duration(p.duration));
+        if by_task {
             for t in &p.tasks {
                 println!("  {:<33} {}", t.name, timeutil::format_duration(t.duration));
             }
-            grand_total += p.duration;
             println!();
-        }
-    } else {
-        for p in summary::compute_project_totals(&entries, &projects) {
-            println!("{:<35} {}", p.name, timeutil::format_duration(p.duration));
-            grand_total += p.duration;
         }
     }
     println!("{}", "\u{2500}".repeat(40));
-    println!("{:<35} {}", "Total", timeutil::format_duration(grand_total));
+    println!("{:<35} {}", "Total", timeutil::format_duration(s.total));
     Ok(())
 }
 
@@ -760,6 +766,35 @@ mod tests {
         let mut c = Client::new("test-api-key", "ws123");
         c.base_url = server.url();
         c
+    }
+
+    #[test]
+    fn summarize_totals_by_project_and_task() {
+        let mut server = mockito::Server::new();
+        server
+            .mock("GET", "/workspaces/ws123/user/u1/time-entries")
+            .match_query(Matcher::Any)
+            .with_body(
+                r##"[{"projectId":"p1","task":{"name":"#12"},"timeInterval":{"start":"2026-04-05T02:00:00Z","end":"2026-04-05T03:00:00Z"}},
+                    {"projectId":"p2","description":"Standup","timeInterval":{"start":"2026-04-05T04:00:00Z","end":"2026-04-05T04:30:00Z"}}]"##,
+            )
+            .create();
+        server
+            .mock("GET", "/workspaces/ws123/projects")
+            .with_body(r#"[{"id":"p1","name":"RMS"},{"id":"p2","name":"Internal"}]"#)
+            .create();
+
+        let s = summarize(&cfg(), &clockify(&server), "", "2026-04-05", "2026-04-05").unwrap();
+
+        assert_eq!(s.label, "2026-04-05 -> 2026-04-05");
+        assert_eq!(s.total, 5400);
+        assert_eq!(
+            serde_json::to_value(&s.projects).unwrap(),
+            serde_json::json!([
+                {"name": "Internal", "duration": 1800, "tasks": [{"name": "Standup", "duration": 1800}]},
+                {"name": "RMS", "duration": 3600, "tasks": [{"name": "#12", "duration": 3600}]}
+            ])
+        );
     }
 
     fn no_fetch(_: &str) -> Result<CardInfo> {

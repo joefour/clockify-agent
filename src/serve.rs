@@ -271,13 +271,14 @@ async fn serve(repo: PathBuf, owner: String, tailnet_host: String) -> Result<()>
     let local = axum::serve(local, gated(router(state.clone()), Gate::Local));
     let tailnet = axum::serve(tailnet, gated(router(state), Gate::Tailnet { owner, host: tailnet_host }));
     let mut term = signal(SignalKind::terminate()).context("could not watch SIGTERM")?;
-    tokio::select! {
-        r = async { tokio::try_join!(async { local.await }, async { tailnet.await }) } => { r?; }
-        _ = term.recv() => {}
-        _ = tokio::signal::ctrl_c() => {}
-    }
+    let served = tokio::select! {
+        r = async { tokio::try_join!(async { local.await }, async { tailnet.await }) } => r.map(|_| ()),
+        _ = term.recv() => Ok(()),
+        _ = tokio::signal::ctrl_c() => Ok(()),
+    };
     // A run would outlive the server: claude has its own process group and approvals off.
-    ask.stop();
+    ask.shutdown().await;
+    served?;
     Ok(())
 }
 

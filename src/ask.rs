@@ -42,6 +42,25 @@ impl AskEvent {
             AskEvent::Idle | AskEvent::Start { .. } => 0,
         }
     }
+
+    /// Cuts at least `excess` bytes from the head, keeping the tail; never splits a character.
+    /// Exit drops whole leading stderr lines, the same units `size` counts.
+    fn trim_head(&mut self, mut excess: usize) {
+        match self {
+            AskEvent::Text { text } | AskEvent::Result { text, .. } | AskEvent::Bash { command: text } => {
+                while excess < text.len() && !text.is_char_boundary(excess) {
+                    excess += 1;
+                }
+                text.drain(..excess.min(text.len()));
+            }
+            AskEvent::Exit { stderr, .. } => {
+                while excess > 0 && !stderr.is_empty() {
+                    excess = excess.saturating_sub(stderr.remove(0).len());
+                }
+            }
+            AskEvent::Idle | AskEvent::Start { .. } => {}
+        }
+    }
 }
 
 /// argv after `claude` for one headless run in `repo`, the same as the tray's claudeArgs.
@@ -112,6 +131,12 @@ impl RunState {
             let old = self.events.pop_front().expect("more than one event");
             self.bytes -= old.size();
             self.first += 1;
+        }
+        // One event over the cap loses its head instead, as the tray's capEvents does.
+        if let (true, Some(front)) = (self.bytes > CAP, self.events.front_mut()) {
+            let before = front.size();
+            front.trim_head(self.bytes - CAP);
+            self.bytes -= before - front.size();
         }
     }
 }
@@ -224,6 +249,32 @@ impl Ask {
         });
     }
 
+    /// Server shutdown: SIGTERM to the run's group, then SIGKILL if it is still going after
+    /// 3 s. Awaited, so the runtime is not dropped before the kill. No run: nothing.
+    pub async fn shutdown(self: &Arc<Self>) {
+        let mut tick = self.tick.subscribe();
+        let pgid = {
+            let s = self.state.lock().expect("ask state lock");
+            if !s.running {
+                return;
+            }
+            s.pgid
+        };
+        let Some(pg) = pgid else { return };
+        signal(pg, libc::SIGTERM);
+        let exited = tokio::time::timeout(Duration::from_secs(3), async {
+            while self.state.lock().expect("ask state lock").running {
+                if tick.changed().await.is_err() {
+                    break;
+                }
+            }
+        })
+        .await;
+        if exited.is_err() {
+            signal(pg, libc::SIGKILL);
+        }
+    }
+
     /// The current run from its start, then its live events until it exits. A viewer
     /// that reconnects (a phone waking up) gets the whole run again. Idle before any run.
     pub fn follow(self: &Arc<Self>) -> mpsc::Receiver<AskEvent> {
@@ -333,7 +384,25 @@ mod tests {
         }
         assert_eq!((s.events.len(), s.first, s.bytes), (2, 1, 60 * 1024));
         s.push(AskEvent::Text { text: "y".repeat(100 * 1024) });
-        assert_eq!((s.events.len(), s.first), (1, 3), "one event over the cap stays");
+        assert_eq!((s.events.len(), s.first), (1, 3));
+        assert_eq!(s.events.len(), 1);
+        assert!(s.bytes <= CAP, "{}", s.bytes);
+        match &s.events[0] {
+            AskEvent::Text { text } => assert!(text.len() <= CAP && text.ends_with('y') && text.len() == s.bytes),
+            e => panic!("{e:?}"),
+        }
+    }
+
+    #[test]
+    fn the_cap_cut_never_splits_a_character() {
+        let mut s = RunState::default();
+        // 2-byte chars: the cut point of an odd excess lands inside one.
+        s.push(AskEvent::Text { text: format!("a{}", "é".repeat(CAP / 2 + 10)) });
+        assert!(s.bytes <= CAP);
+        match &s.events[0] {
+            AskEvent::Text { text } => assert!(text.chars().all(|c| c == 'é') && text.len() == s.bytes),
+            e => panic!("{e:?}"),
+        }
     }
 
     fn fake_claude(name: &str, script: &str) -> (String, PathBuf) {
@@ -394,5 +463,20 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"done"}'"#,
         assert!(matches!(events.last(), Some(AskEvent::Exit { code: None, .. })), "stopped by a signal: {events:?}");
         assert!(ask.start("c".into()).is_ok(), "free again after the exit");
         ask.stop();
+    }
+
+    #[tokio::test]
+    async fn shutdown_kills_a_run_that_ignores_term() {
+        let (exe, dir) = fake_claude("deaf", "trap '' TERM; while :; do sleep 1; done");
+        let ask = Arc::new(Ask::new(exe, dir));
+        assert!(ask.start("a".into()).is_ok());
+        tokio::time::sleep(Duration::from_millis(300)).await; // let sh install the trap
+        let t = std::time::Instant::now();
+        ask.shutdown().await;
+        assert!(t.elapsed() < Duration::from_secs(4), "{:?}", t.elapsed());
+        let events = collect(&ask).await;
+        assert!(matches!(events.last(), Some(AskEvent::Exit { code: None, .. })), "{events:?}");
+        assert!(ask.start("b".into()).is_ok(), "free again");
+        ask.shutdown().await;
     }
 }

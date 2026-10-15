@@ -335,8 +335,13 @@ async function resolveLink(link) {
   showMenu([], 'Looking up the card…');
   try {
     const hit = await api(`/api/card?url=${encodeURIComponent(link)}`);
-    if (seq === searchSeq) pick({ ...hit, pasted: true });
-  } catch (e) { if (seq === searchSeq) showMenu([], e.message); }
+    if (seq === searchSeq) { $('logMsg').textContent = ''; pick({ ...hit, pasted: true }); }
+  } catch (e) {
+    // The status line, not the menu: a menu reopened after the field lost focus would never close.
+    if (seq !== searchSeq) return;
+    closeMenu();
+    $('logMsg').className = 'msg err'; $('logMsg').textContent = e.message;
+  }
 }
 
 function showMenu(hits, note) {
@@ -363,13 +368,13 @@ function closeMenu() { $('menu').hidden = true; st.hits = []; st.hi = -1; }
 function pick(h) { st.card = h; $('q').value = ''; closeMenu(); paintLog(); loadProjects(); }
 
 $('q').addEventListener('keydown', (ev) => {
+  if (ev.key === 'Escape') { closeMenu(); return; }
   if ($('menu').hidden || !st.hits.length) return;
   if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
     ev.preventDefault();
     st.hi = (st.hi + (ev.key === 'ArrowDown' ? 1 : -1) + st.hits.length) % st.hits.length;
     [...$('menu').children].forEach((r, i) => r.classList.toggle('h', i === st.hi));
   } else if (ev.key === 'Enter' && !(ev.metaKey || ev.ctrlKey)) { ev.preventDefault(); pick(st.hits[st.hi]); }
-  else if (ev.key === 'Escape') closeMenu();
 });
 $('q').addEventListener('blur', () => setTimeout(closeMenu, 150));
 $('clear').addEventListener('click', () => { st.card = null; paintLog(); $('q').focus(); });

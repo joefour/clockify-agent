@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Rendered into ~/Library/LaunchAgents by `make install`; @HOME@, @REPO@, @OWNER@ and @TS_HOST@ are filled in there. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.clockifyagent.dashboard</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>@HOME@/.local/bin/clockify</string>
+		<string>serve</string>
+		<string>--repo</string>
+		<string>@REPO@</string>
+		<!-- Empty when Tailscale was not running at install: the tailnet port then refuses everyone. -->
+		<string>--owner</string>
+		<string>@OWNER@</string>
+		<string>--tailnet-host</string>
+		<string>@TS_HOST@</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<!-- Up at all times, so the page answers while you are away from the Mac. -->
+	<key>KeepAlive</key>
+	<true/>
+	<!-- claude, clockify, trello-agent and trello live in these. -->
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>@HOME@/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+	</dict>
+	<key>ExitTimeOut</key>
+	<integer>10</integer>
+	<key>StandardOutPath</key>
+	<string>@HOME@/Library/Logs/clockify-agent-dashboard.log</string>
+	<key>StandardErrorPath</key>
+	<string>@HOME@/Library/Logs/clockify-agent-dashboard.log</string>
+</dict>
+</plist>

@@ -6,6 +6,10 @@ SELFTEST    := $(or $(TMPDIR),/tmp)/$(TRAY)-selftest
 APP         := Clockify Agent.app
 AGENT       := com.clockifyagent.tray
 AGENT_PLIST := $(HOME)/Library/LaunchAgents/$(AGENT).plist
+DASH        := com.clockifyagent.dashboard
+DASH_PLIST  := $(HOME)/Library/LaunchAgents/$(DASH).plist
+# The tailnet's https port for the dashboard; tailscale serve forwards it to 127.0.0.1:8768.
+TS_PORT     := 8447
 BIN_DIR     := $(HOME)/.local/bin
 APP_DIR     := $(HOME)/Applications
 # Login Items shows the app's name only for a team-signed agent (an ad-hoc one
@@ -16,6 +20,7 @@ SIGN_ID     ?= $(or $(shell security find-identity -v -p codesigning 2>/dev/null
 
 # Unload the login agent and wait until it has exited.
 stop-agent = launchctl bootout gui/$$(id -u)/$(AGENT) 2>/dev/null; while launchctl print gui/$$(id -u)/$(AGENT) >/dev/null 2>&1; do sleep 0.2; done
+stop-dash = launchctl bootout gui/$$(id -u)/$(DASH) 2>/dev/null; while launchctl print gui/$$(id -u)/$(DASH) >/dev/null 2>&1; do sleep 0.2; done
 
 .PHONY: build test tray-test app check install-cli install uninstall
 
@@ -44,16 +49,25 @@ install-cli: build ## install the CLI only
 	mkdir -p $(BIN_DIR)
 	install -m 755 $(CLI) $(BIN_DIR)/
 
-install: install-cli app ## install the CLI, run the tray now and at every login
-	sed -e 's|@HOME@|$(HOME)|g' -e 's|@REPO@|$(CURDIR)|g' tray/$(AGENT).plist > $(AGENT).plist.tmp
-	plutil -lint $(AGENT).plist.tmp
+install: install-cli app ## install the CLI, run the tray and the dashboard now and at every login
+	@ts="$$(/usr/bin/python3 dashboard/tailnet.py)"; dns="$${ts% *}"; owner="$${ts#* }"; host="$${dns:+$$dns:$(TS_PORT)}"; \
+	[ -n "$$ts" ] || echo "Tailscale is not running: Via Tailscale stays hidden and the tailnet port refuses everyone until the next make install."; \
+	sed -e 's|@HOME@|$(HOME)|g' -e 's|@REPO@|$(CURDIR)|g' -e "s|@TAILNET_URL@|$${host:+https://$$host}|g" tray/$(AGENT).plist > $(AGENT).plist.tmp; \
+	sed -e 's|@HOME@|$(HOME)|g' -e 's|@REPO@|$(CURDIR)|g' -e "s|@OWNER@|$$owner|g" -e "s|@TS_HOST@|$$host|g" dashboard/$(DASH).plist > $(DASH).plist.tmp; \
+	if [ -n "$$ts" ]; then tailscale serve --bg --https=$(TS_PORT) http://127.0.0.1:8768; fi
+	plutil -lint $(AGENT).plist.tmp $(DASH).plist.tmp
 	@$(stop-agent)
+	@$(stop-dash)
 	mkdir -p "$(APP_DIR)" $(dir $(AGENT_PLIST))
 	rm -rf "$(APP_DIR)/$(APP)" && cp -R "build/$(APP)" "$(APP_DIR)/"
 	/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$(APP_DIR)/$(APP)"
 	mv $(AGENT).plist.tmp $(AGENT_PLIST)
+	mv $(DASH).plist.tmp $(DASH_PLIST)
 	launchctl bootstrap gui/$$(id -u) $(AGENT_PLIST)
+	launchctl bootstrap gui/$$(id -u) $(DASH_PLIST)
 
-uninstall: ## stop the tray, remove the login item and the app (the CLI stays)
+uninstall: ## stop the tray and the dashboard, remove their login items, the app and the tailnet port (the CLI stays)
 	@$(stop-agent)
-	rm -rf $(AGENT_PLIST) "$(APP_DIR)/$(APP)"
+	@$(stop-dash)
+	-tailscale serve --https=$(TS_PORT) off
+	rm -rf $(AGENT_PLIST) $(DASH_PLIST) "$(APP_DIR)/$(APP)"

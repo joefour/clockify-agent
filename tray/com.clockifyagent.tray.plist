@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- Rendered into ~/Library/LaunchAgents by `make install`; @HOME@ and @REPO@ are filled in there. -->
+<!-- Rendered into ~/Library/LaunchAgents by `make install`; @HOME@, @REPO@ and @TAILNET_URL@ are filled in there. -->
 <plist version="1.0">
 <dict>
 	<key>Label</key>
@@ -10,6 +10,9 @@
 		<string>@HOME@/Applications/Clockify Agent.app/Contents/MacOS/clockify-agent-tray</string>
 		<string>--repo</string>
 		<string>@REPO@</string>
+		<!-- Empty when Tailscale was not running at install: the tray then hides Via Tailscale. -->
+		<string>--tailnet-url</string>
+		<string>@TAILNET_URL@</string>
 	</array>
 	<!-- Login Items names this agent after the app. -->
 	<key>AssociatedBundleIdentifiers</key>

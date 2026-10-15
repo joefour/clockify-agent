@@ -144,6 +144,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/", get(|| async { Html(PAGE) }))
         .route("/api/totals", get(totals))
         .route("/api/search", get(search))
+        .route("/api/card", get(card))
         .route("/api/projects", get(projects))
         .route("/api/log", post(log))
         .route("/api/ask", post(ask_start))
@@ -185,6 +186,23 @@ async fn search(State(s): Shared, Query(q): Query<SearchQuery>) -> Result<Json<V
         hit.mapped = !s.cfg.get_clockify_project_id(&hit.board_id, &hit.board).is_empty();
     }
     Ok(Json(hits))
+}
+
+#[derive(Deserialize)]
+struct CardQuery {
+    #[serde(default)]
+    url: String,
+}
+
+/// A pasted card link, resolved to the same shape as a search hit.
+async fn card(State(s): Shared, Query(q): Query<CardQuery>) -> Result<Json<CardHit>, ApiError> {
+    let mut hit = blocking({
+        let s = s.clone();
+        move || trello::fetch_card_hit(&s.trello_base, &q.url, &s.cfg.trello_api_key, &s.cfg.trello_token)
+    })
+    .await?;
+    hit.mapped = !s.cfg.get_clockify_project_id(&hit.board_id, &hit.board).is_empty();
+    Ok(Json(hit))
 }
 
 async fn projects(State(s): Shared) -> Result<Json<Vec<Project>>, ApiError> {
@@ -493,6 +511,41 @@ mod tests {
                 {"id": "c2", "number": 9, "name": "Login page", "url": "https://trello.com/c/Zz9/9-login-page", "board": "Elsewhere", "board_id": "b-x", "mapped": false}
             ])
         );
+    }
+
+    #[tokio::test]
+    async fn card_resolves_a_pasted_link_and_maps_it() {
+        let mut trello = mockito::Server::new_async().await;
+        trello
+            .mock("GET", "/cards/AbC123")
+            .match_query(mockito::Matcher::Any)
+            .with_body(r#"{"id":"c1","idShort":482,"name":"Login fails","url":"https://trello.com/c/AbC123/482-login-fails","board":{"id":"b-rms","name":"RMS"}}"#)
+            .create_async()
+            .await;
+        trello
+            .mock("GET", "/cards/Zz9")
+            .match_query(mockito::Matcher::Any)
+            .with_body(r#"{"id":"c2","idShort":9,"name":"Login page","url":"https://trello.com/c/Zz9/9-login-page","board":{"id":"b-x","name":"Elsewhere"}}"#)
+            .create_async()
+            .await;
+        let app = gated(router(state("http://127.0.0.1:1", &trello.url())), Gate::Local);
+
+        let (status, body) = call(app.clone(), local_get("/api/card?url=https%3A%2F%2Ftrello.com%2Fc%2FAbC123")).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(
+            body,
+            json!({"id": "c1", "number": 482, "name": "Login fails", "url": "https://trello.com/c/AbC123/482-login-fails", "board": "RMS", "board_id": "b-rms", "mapped": true})
+        );
+
+        let (status, body) = call(app.clone(), local_get("/api/card?url=https%3A%2F%2Ftrello.com%2Fc%2FZz9")).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["mapped"], false);
+
+        for uri in ["/api/card", "/api/card?url=https%3A%2F%2Fevil.example%2Fc%2FAbC123"] {
+            let (status, body) = call(app.clone(), local_get(uri)).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}");
+            assert_eq!(body["error"], "Not a Trello card link", "{uri}");
+        }
     }
 
     #[test]

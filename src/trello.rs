@@ -120,6 +120,37 @@ pub struct CardHit {
     pub mapped: bool,
 }
 
+/// A card as Trello's REST API returns it, with its board when asked for.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ApiCard {
+    id: String,
+    id_short: i64,
+    #[serde(default, deserialize_with = "null_default")]
+    name: String,
+    #[serde(default, deserialize_with = "null_default")]
+    url: String,
+    #[serde(default)]
+    closed: bool,
+    #[serde(default)]
+    board: Option<ApiBoard>,
+}
+
+#[derive(Default, Deserialize)]
+struct ApiBoard {
+    #[serde(default, deserialize_with = "null_default")]
+    id: String,
+    #[serde(default, deserialize_with = "null_default")]
+    name: String,
+}
+
+impl From<ApiCard> for CardHit {
+    fn from(c: ApiCard) -> Self {
+        let board = c.board.unwrap_or_default();
+        CardHit { id: c.id, number: c.id_short, name: c.name, url: c.url, board: board.name, board_id: board.id, mapped: false }
+    }
+}
+
 /// Up to 10 open cards matching `query`, from every board the token can see, through
 /// the Trello REST API at `base`.
 pub fn search_cards(base: &str, query: &str, api_key: &str, token: &str) -> Result<Vec<CardHit>> {
@@ -130,28 +161,7 @@ pub fn search_cards(base: &str, query: &str, api_key: &str, token: &str) -> Resu
     #[derive(Deserialize)]
     struct Found {
         #[serde(default)]
-        cards: Vec<Card>,
-    }
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct Card {
-        id: String,
-        id_short: i64,
-        #[serde(default, deserialize_with = "null_default")]
-        name: String,
-        #[serde(default, deserialize_with = "null_default")]
-        url: String,
-        #[serde(default)]
-        closed: bool,
-        #[serde(default)]
-        board: Option<Board>,
-    }
-    #[derive(Deserialize)]
-    struct Board {
-        #[serde(default, deserialize_with = "null_default")]
-        id: String,
-        #[serde(default, deserialize_with = "null_default")]
-        name: String,
+        cards: Vec<ApiCard>,
     }
 
     let mut resp = http_agent()
@@ -172,15 +182,42 @@ pub fn search_cards(base: &str, query: &str, api_key: &str, token: &str) -> Resu
         bail!("Trello search failed: {}", resp.status());
     }
     let found: Found = resp.body_mut().read_json().context("Trello search returned invalid JSON")?;
-    Ok(found
-        .cards
-        .into_iter()
-        .filter(|c| !c.closed)
-        .map(|c| {
-            let board = c.board.unwrap_or(Board { id: String::new(), name: String::new() });
-            CardHit { id: c.id, number: c.id_short, name: c.name, url: c.url, board: board.name, board_id: board.id, mapped: false }
-        })
-        .collect())
+    Ok(found.cards.into_iter().filter(|c| !c.closed).map(CardHit::from).collect())
+}
+
+/// The card a pasted link points at, through the Trello REST API at `base`. Only
+/// trello.com card links pass, so a link can't steer the request to another path.
+/// Archived cards come back too: pasting a link is a deliberate choice.
+pub fn fetch_card_hit(base: &str, url: &str, api_key: &str, token: &str) -> Result<CardHit> {
+    if api_key.is_empty() || token.is_empty() {
+        bail!("Trello key and token are not configured");
+    }
+    let short_id = card_link_short_id(url).context("Not a Trello card link")?;
+    let mut resp = http_agent()
+        .get(format!("{base}/cards/{short_id}"))
+        .query("fields", "name,idShort,url")
+        .query("board", "true")
+        .query("board_fields", "name")
+        .query("key", api_key)
+        .query("token", token)
+        .call()
+        .context("Trello card lookup failed")?;
+    // The status only: Trello's error body can echo the request.
+    if !resp.status().is_success() {
+        bail!("Trello card lookup failed: {}", resp.status());
+    }
+    let card: ApiCard = resp.body_mut().read_json().context("Trello returned invalid card JSON")?;
+    Ok(card.into())
+}
+
+/// The short id of a trello.com card link (https or http, with or without www), or
+/// None. Short ids are letters and digits, so nothing else can reach the request path.
+fn card_link_short_id(url: &str) -> Option<&str> {
+    let url = url.trim();
+    let rest = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://"))?;
+    let rest = rest.strip_prefix("www.").unwrap_or(rest);
+    let short_id = rest.strip_prefix("trello.com/c/")?.split(['/', '?', '#']).next()?;
+    (!short_id.is_empty() && short_id.chars().all(|c| c.is_ascii_alphanumeric())).then_some(short_id)
 }
 
 #[cfg(test)]
@@ -312,5 +349,79 @@ mod tests {
         server.mock("GET", "/search").match_query(Matcher::Any).with_status(401).with_body("invalid token").create();
         let err = search_cards(&server.url(), "login", "k", "t").unwrap_err();
         assert_eq!(err.to_string(), "Trello search failed: 401 Unauthorized");
+    }
+
+    fn card_mock(server: &mut mockito::Server, short_id: &str) -> mockito::Mock {
+        server
+            .mock("GET", format!("/cards/{short_id}").as_str())
+            .match_query(Matcher::AllOf(vec![
+                Matcher::UrlEncoded("fields".into(), "name,idShort,url".into()),
+                Matcher::UrlEncoded("board".into(), "true".into()),
+                Matcher::UrlEncoded("board_fields".into(), "name".into()),
+                Matcher::UrlEncoded("key".into(), "k".into()),
+                Matcher::UrlEncoded("token".into(), "t".into()),
+            ]))
+            .with_body(r#"{"id":"c1","idShort":482,"name":"Login fails after SSO","url":"https://trello.com/c/AbC123/482-login-fails-after-sso","board":{"id":"b1","name":"RMS"}}"#)
+    }
+
+    fn login_hit() -> CardHit {
+        CardHit {
+            id: "c1".into(),
+            number: 482,
+            name: "Login fails after SSO".into(),
+            url: "https://trello.com/c/AbC123/482-login-fails-after-sso".into(),
+            board: "RMS".into(),
+            board_id: "b1".into(),
+            mapped: false,
+        }
+    }
+
+    #[test]
+    fn card_hit_from_short_and_long_links() {
+        let mut server = mockito::Server::new();
+        let card = card_mock(&mut server, "AbC123").expect(5).create();
+        for link in [
+            "https://trello.com/c/AbC123",
+            "https://trello.com/c/AbC123/482-login-fails-after-sso",
+            "http://www.trello.com/c/AbC123/",
+            " https://trello.com/c/AbC123?filter=member ",
+            "https://trello.com/c/AbC123#comment-1",
+        ] {
+            assert_eq!(fetch_card_hit(&server.url(), link, "k", "t").unwrap(), login_hit(), "{link}");
+        }
+        card.assert();
+    }
+
+    #[test]
+    fn card_hit_refuses_other_links_before_any_request() {
+        // Port 1 refuses connections: a request would fail with a different error.
+        for link in [
+            "https://evil.example/c/AbC123",
+            "https://trello.com.evil.example/c/AbC123",
+            "https://evil.example/trello.com/c/AbC123",
+            "https://trello.com/b/AbC123/rms",
+            "https://trello.com/c/",
+            "https://trello.com/c/..%2F..%2Fmembers",
+            "https://trello.com/c/Ab-C1",
+            "trello.com/c/AbC123",
+            "",
+        ] {
+            let err = fetch_card_hit("http://127.0.0.1:1", link, "k", "t").unwrap_err();
+            assert_eq!(err.to_string(), "Not a Trello card link", "{link}");
+        }
+    }
+
+    #[test]
+    fn card_hit_needs_credentials() {
+        let err = fetch_card_hit("http://127.0.0.1:1", "https://trello.com/c/AbC123", "k", "").unwrap_err();
+        assert_eq!(err.to_string(), "Trello key and token are not configured");
+    }
+
+    #[test]
+    fn card_hit_reports_trello_errors() {
+        let mut server = mockito::Server::new();
+        server.mock("GET", "/cards/Gone1").match_query(Matcher::Any).with_status(404).with_body("The requested resource was not found.").create();
+        let err = fetch_card_hit(&server.url(), "https://trello.com/c/Gone1", "k", "t").unwrap_err();
+        assert_eq!(err.to_string(), "Trello card lookup failed: 404 Not Found");
     }
 }

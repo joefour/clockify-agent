@@ -68,6 +68,7 @@ final class PanelModel {
     var procsOpen = false { didSet { changed() } }
     var claude: [ProcStat]?                              // the run's process tree; Tray calls statsChanged after sampling
     var tray = ""
+    var tailnet: URL?                                    // the dashboard over Tailscale; nil hides its button
     var cap: CGFloat = 400                               // tallest the whole panel may be; Tray sets it from the screen
     // Set by PanelController.
     var changed: () -> Void = {}
@@ -77,6 +78,7 @@ final class PanelModel {
     var onSend: (String) -> Void = { _ in }
     var onStop: () -> Void = {}
     var onLog: () -> Void = {}
+    var onOpen: (URL) -> Void = { _ in }
     var onQuit: () -> Void = {}
     var onResize: () -> Void = {}
 }
@@ -603,11 +605,14 @@ final class PanelController: NSViewController, NSTextViewDelegate {
     }
 
     func footer() -> NSView {
-        let row = hstack([
+        let buttons: [NSView?] = [
             txtBtn(p, "Open Log", .b, pad: (0, 8)) { [unowned self] in m.onLog() },
+            txtBtn(p, "Dashboard", .b, pad: (8, 8)) { [unowned self] in m.onOpen(dashboardURL) },
+            m.tailnet.map { url in txtBtn(p, "Via Tailscale", .b, pad: (8, 8)) { [unowned self] in m.onOpen(url) } },
             spacer(),
             txtBtn(p, "Quit", .r, color: p.muted, pad: (8, 0), key: "q") { [unowned self] in m.onQuit() },
-        ], 4)
+        ]
+        let row = hstack(buttons.compactMap { $0 }, 4)
         let c = label(claudeLine(m.claude), 12, p.muted), t = label(m.tray, 12, p.muted)
         claudeStat = c
         trayStat = t

@@ -361,10 +361,19 @@ func iconLabel(_ s: IconState) -> String {
     }
 }
 
-/// --repo <path>, else nil.
-func repoArg(_ args: [String]) -> String? {
-    guard let i = args.firstIndex(of: "--repo"), i + 1 < args.count else { return nil }
+/// The value after `flag` in argv, else nil.
+func argValue(_ args: [String], _ flag: String) -> String? {
+    guard let i = args.firstIndex(of: flag), i + 1 < args.count else { return nil }
     return args[i + 1]
+}
+
+/// The dashboard `clockify serve` runs (dashboard/com.clockifyagent.dashboard.plist).
+let dashboardURL = URL(string: "http://127.0.0.1:8767")!
+
+/// The dashboard over Tailscale, from --tailnet-url. make install passes an empty value
+/// when Tailscale wasn't running, and the tray then hides the button.
+func tailnetURL(_ args: [String]) -> URL? {
+    argValue(args, "--tailnet-url").flatMap { $0.isEmpty ? nil : URL(string: $0) }
 }
 
 #if SELFTEST
@@ -536,8 +545,10 @@ precondition(phaseAfter(exit: .signal(15), stopped: true, events: [], duration: 
 precondition(promptTitle("log 2h to https://trello.com/c/AbC123 from 09:00 please") == "log 2h to https://trello.com/c/AbC123 fr…", "title: \(promptTitle("log 2h to https://trello.com/c/AbC123 from 09:00 please"))")
 precondition(promptTitle("  what\ndid I log  ") == "what did I log", "title squashes whitespace")
 
-// repoArg
-precondition(repoArg(["x", "--repo", "/r"]) == "/r" && repoArg(["x"]) == nil && repoArg(["x", "--repo"]) == nil, "repoArg")
+// argValue, tailnetURL
+precondition(argValue(["x", "--repo", "/r"], "--repo") == "/r" && argValue(["x"], "--repo") == nil && argValue(["x", "--repo"], "--repo") == nil, "argValue")
+precondition(tailnetURL(["x", "--tailnet-url", "https://mac.ts.net:8447"]) == URL(string: "https://mac.ts.net:8447"), "tailnetURL")
+precondition(tailnetURL(["x", "--tailnet-url", ""]) == nil && tailnetURL(["x"]) == nil, "no Tailscale at install: no URL")
 precondition(iconImage(.running).size == NSSize(width: 17, height: 17) && iconImage(.idle).isTemplate, "icon")
 
 print("tray selftest ok")
@@ -573,7 +584,12 @@ final class Tray: NSObject, NSApplicationDelegate {
     var quitting = false
     var signals: [DispatchSourceSignal] = []
 
-    init(repo: String?) { self.repo = repo }
+    let tailnet: URL?
+
+    init(repo: String?, tailnet: URL?) {
+        self.repo = repo
+        self.tailnet = tailnet
+    }
 
     func applicationDidFinishLaunching(_ n: Notification) {
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -605,6 +621,9 @@ final class Tray: NSObject, NSApplicationDelegate {
         model.onSend = { [unowned self] in send($0) }
         model.onStop = { [unowned self] in run?.stop() }
         model.onLog = { [unowned self] in closePanel(); NSWorkspace.shared.open(logURL) }
+        model.tailnet = tailnet
+        model.onOpen = { [unowned self] in closePanel(); NSWorkspace.shared.open($0) }
+        if tailnet == nil { NSLog("No --tailnet-url: Tailscale wasn't running at make install, so the Tailscale button is hidden.") }
         model.onQuit = { [unowned self] in closePanel(); quit() }
         model.onResize = { [unowned self] in place() }
         window.contentViewController = panel
@@ -757,7 +776,7 @@ final class Tray: NSObject, NSApplicationDelegate {
 }
 
 let app = NSApplication.shared
-let tray = Tray(repo: repoArg(CommandLine.arguments))
+let tray = Tray(repo: argValue(CommandLine.arguments, "--repo"), tailnet: tailnetURL(CommandLine.arguments))
 app.delegate = tray
 app.setActivationPolicy(.accessory)
 app.run()

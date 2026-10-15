@@ -591,4 +591,15 @@ mod tests {
         assert!(!html.contains("backdrop-filter"), "the Glass HUD is gone");
         assert!(!html.contains("innerHTML"), "server text goes in with textContent only");
     }
+
+    #[tokio::test]
+    async fn the_theme_controls_name_the_current_mode() {
+        let app = gated(router(state("http://127.0.0.1:1", "http://127.0.0.1:1")), Gate::Local);
+        let resp = app.oneshot(local_get("/")).await.unwrap();
+        let html = String::from_utf8(axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap().to_vec()).unwrap();
+        let cycle_tag = html.split(r#"id="themeCycle""#).nth(1).and_then(|rest| rest.split('>').next()).unwrap();
+        assert!(!cycle_tag.contains("aria-label"), "a fixed aria-label hides the mode the button shows");
+        assert!(html.contains("`Theme: ${t}`"), "the phone button's label carries the mode");
+        assert!(html.contains("'aria-pressed'"), "the desktop segments say which one is on");
+    }
 }

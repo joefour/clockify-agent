@@ -151,7 +151,7 @@ try { const t = localStorage.getItem('clockify-theme'); if (t === 'light' || t =
     <div class="tools">
       <p class="meta" aria-live="polite"><span>Today <b id="mastToday">–</b></span><span>Week <b id="mastWeek">–</b></span></p>
       <div class="seg" id="theme" role="group" aria-label="Theme"><button type="button" data-t="auto">Auto</button><button type="button" data-t="light">Light</button><button type="button" data-t="dark">Dark</button></div>
-      <button class="btn sm cycle" id="themeCycle" type="button" aria-label="Theme, tap to change">◐ Auto</button>
+      <button class="btn sm cycle" id="themeCycle" type="button">◐ Auto</button>
       <button class="btn" id="refresh" type="button">Refresh</button>
     </div>
   </header>
@@ -256,8 +256,9 @@ function setTheme(t) {
 }
 function paintTheme() {
   const t = theme();
-  for (const b of $('theme').children) b.classList.toggle('on', b.dataset.t === t);
+  for (const b of $('theme').children) { b.classList.toggle('on', b.dataset.t === t); b.setAttribute('aria-pressed', String(b.dataset.t === t)); }
   $('themeCycle').textContent = THEME_LABEL[t];
+  $('themeCycle').setAttribute('aria-label', `Theme: ${t}`);   // the symbol alone reads badly in VoiceOver
   $('themeColor').content = getComputedStyle(document.documentElement).getPropertyValue('--paper').trim();
 }
 $('theme').addEventListener('click', (ev) => { const t = ev.target.closest('button')?.dataset.t; if (t) setTheme(t); });

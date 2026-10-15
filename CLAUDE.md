@@ -43,7 +43,7 @@ Web page to log time, see totals and ask Claude, on the Mac or the phone over Ta
 Architecture:
 - `src/serve.rs`: axum router, the request guard, the JSON API, the listeners and shutdown
 - `src/ask.rs`: Ask Claude: the tray's claude argv, stream-json events, the replay buffer
-- `src/web/index.html`: the page (agent-ask's Glass HUD, Frosted), built into the binary
+- `src/web/index.html`: the page (claude-usage's Swiss sheet; Clock and Hours tabs; Auto, Light and Dark themes), built into the binary
 
 Ask Claude runs with approvals off, like the tray, and Trello card text can steer it the same way (see the tray's note below). Over Tailscale only the owner can start a run.
 

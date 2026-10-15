@@ -457,4 +457,15 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body, json!([{"id": "c1", "number": 482, "name": "Login fails", "url": "https://trello.com/c/AbC123", "board": "RMS"}]));
     }
+
+    #[tokio::test]
+    async fn the_page_has_the_three_cards() {
+        let app = gated(router(state("http://127.0.0.1:1", "http://127.0.0.1:1")), Gate::Local);
+        let resp = app.oneshot(local_get("/")).await.unwrap();
+        let html = String::from_utf8(axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap().to_vec()).unwrap();
+        for id in [r#"id="log""#, r#"id="totals""#, r#"id="ask""#, "backdrop-filter: blur(40px) saturate(1.4)"] {
+            assert!(html.contains(id), "page lacks {id}");
+        }
+        assert!(!html.contains("innerHTML"), "server text goes in with textContent only");
+    }
 }

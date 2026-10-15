@@ -2,10 +2,362 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#1d2230">
 <title>Clockify</title>
+<style>
+  :root { --accent: #D97757; --ink: #ececec; --muted: #9a9a9a; --line: rgba(255,255,255,.12); --fill: rgba(255,255,255,.06); --ok: #9fd8a6; --err: #ff6b61; }
+  * { box-sizing: border-box; }
+  html { background: #141821; }
+  body { margin: 0; min-height: 100vh; padding: 16px 16px calc(16px + env(safe-area-inset-bottom)); color: var(--ink);
+         font: 13px/1.45 -apple-system, system-ui, sans-serif; -webkit-font-smoothing: antialiased;
+         background: radial-gradient(120% 120% at 0% 0%, #3b4a63 0%, #1d2230 55%, #141821 100%) fixed; }
+  main { max-width: 980px; margin: 0 auto; display: grid; gap: 16px; }
+  .col { display: grid; gap: 16px; align-content: start; min-width: 0; }
+  @media (min-width: 760px) { main { grid-template-columns: 1fr 1fr; } }
+  /* Frosted, as agent-ask's panel: heavy blur under an ~85% dark tint. */
+  .hud { position: relative; background: rgba(30,30,32,.86); -webkit-backdrop-filter: blur(40px) saturate(1.4); backdrop-filter: blur(40px) saturate(1.4);
+         border: 1px solid rgba(255,255,255,.14); border-radius: 16px; box-shadow: 0 18px 40px rgba(0,0,0,.45); }
+  .hd { display: flex; gap: 10px; align-items: center; padding: 12px 14px 8px; }
+  .ring { width: 30px; height: 30px; border-radius: 50%; flex: none; display: grid; place-items: center; font-size: 13px; position: relative;
+          background: conic-gradient(var(--accent) 0 var(--p, 100%), rgba(255,255,255,.12) var(--p, 100%) 100%); }
+  .ring::before { content: ""; position: absolute; inset: 3px; border-radius: 50%; background: #262628; }
+  .ring span { position: relative; }
+  .ttl { font-weight: 600; font-size: 13.5px; }
+  .chips { display: flex; gap: 5px; margin-top: 3px; flex-wrap: wrap; }
+  .chip { font-size: 10.5px; padding: 1px 7px; border-radius: 99px; background: rgba(255,255,255,.09); color: #bdbdbd; font-variant-numeric: tabular-nums; }
+  .chip.t { color: #e9a58c; background: rgba(217,119,87,.16); }
+  .sp { flex: 1; }
+  .bd { padding: 2px 14px 12px; }
+  .lbl { font: 600 10px/1 -apple-system, system-ui; letter-spacing: .07em; text-transform: uppercase; color: #8d8d8d; margin: 12px 0 6px; }
+  /* 16px text: iOS zooms into smaller fields. */
+  input, select, textarea { width: 100%; font: 16px/1.3 -apple-system, system-ui; color: var(--ink); padding: 8px 10px; border-radius: 8px;
+         background: var(--fill); border: 1px solid var(--line); outline: none; color-scheme: dark; }
+  input:focus, select:focus, textarea:focus { border-color: rgba(217,119,87,.75); }
+  textarea { resize: vertical; min-height: 64px; }
+  .search { position: relative; }
+  .menu { position: absolute; z-index: 5; left: 0; right: 0; top: calc(100% + 4px); background: #2f2f32; border: 1px solid rgba(255,255,255,.14);
+          border-radius: 9px; padding: 4px; box-shadow: 0 10px 24px rgba(0,0,0,.4); max-height: 320px; overflow-y: auto; }
+  .menu button { display: block; width: 100%; text-align: left; padding: 7px 8px; border-radius: 6px; border: 0; background: none; color: var(--ink);
+                 font: 13px -apple-system, system-ui; cursor: pointer; }
+  .menu button.h { background: var(--accent); color: #fff; }
+  .menu small, .sel small { display: block; opacity: .75; font-size: 11px; margin-top: 1px; }
+  .menu .none { padding: 7px 8px; color: var(--muted); }
+  .sel { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 9px; background: rgba(217,119,87,.14); border: 1px solid var(--accent); }
+  .sel small { color: #c9a596; }
+  .x { margin-left: auto; background: none; border: 0; color: #c9a596; font-size: 15px; cursor: pointer; padding: 2px 4px; }
+  .pills { display: flex; gap: 6px; flex-wrap: wrap; }
+  .pill { font: 500 13px -apple-system, system-ui; padding: 6px 12px; border-radius: 99px; background: rgba(255,255,255,.07); border: 1px solid var(--line);
+          color: #ddd; cursor: pointer; font-variant-numeric: tabular-nums; }
+  .pill.on { background: rgba(217,119,87,.18); border-color: var(--accent); color: #f3c3b0; }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .ft { display: flex; gap: 6px; align-items: center; padding: 9px 12px; background: rgba(255,255,255,.03); border-top: 1px solid rgba(255,255,255,.09);
+        border-radius: 0 0 16px 16px; }
+  .b { font: 500 13px -apple-system, system-ui; padding: 7px 12px; border-radius: 8px; background: rgba(255,255,255,.08); border: 1px solid var(--line);
+       color: var(--ink); cursor: pointer; white-space: nowrap; display: inline-flex; gap: 6px; align-items: center; }
+  .b.p { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .b.g { background: none; border-color: transparent; color: #b8b8b8; padding-left: 4px; }
+  .b:disabled { opacity: .4; cursor: default; }
+  .k { font: 500 10px ui-monospace, Menlo, monospace; opacity: .85; }
+  .msg { font-size: 12.5px; margin-top: 10px; overflow-wrap: anywhere; }
+  .msg.ok { color: var(--ok); }
+  .msg.err { color: var(--err); }
+  .msg a { color: #e9a58c; }
+  .muted { color: var(--muted); }
+  .seg { display: inline-flex; background: rgba(255,255,255,.06); border-radius: 7px; padding: 2px; gap: 2px; }
+  .seg button { font: 12px -apple-system, system-ui; padding: 3px 9px; border-radius: 5px; border: 0; background: none; color: #aaa; cursor: pointer; }
+  .seg button.on { background: rgba(255,255,255,.14); color: var(--ink); }
+  .tot { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; font-size: 13px; }
+  .tot .n { font-variant-numeric: tabular-nums; text-align: right; }
+  .tot .sub { color: #9a9a9a; padding-left: 10px; font-size: 12px; overflow-wrap: anywhere; }
+  .tot .sum { border-top: 1px solid rgba(255,255,255,.1); padding-top: 5px; font-weight: 600; }
+  .asked { font-size: 12px; color: var(--muted); margin-top: 10px; overflow-wrap: anywhere; }
+  .reply { font-size: 13px; margin-top: 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .reply.err { color: var(--err); }
+  .tool { font-size: 11px; color: #9a9a9a; margin: 8px 0 4px; }
+  .code { font: 12px/1.45 ui-monospace, Menlo, monospace; background: rgba(255,255,255,.08); border-radius: 9px; padding: 8px 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  [hidden] { display: none !important; }
+</style>
 </head>
-<body style="background:#141821;color:#ececec;font:13px -apple-system,system-ui,sans-serif;padding:16px">
-<p>Clockify dashboard</p>
+<body>
+<main>
+  <div class="col">
+    <section class="hud" id="log" aria-label="Log time">
+      <div class="hd"><div class="ring" style="--p:44%"><span>⏱</span></div>
+        <div><div class="ttl">Log time</div>
+          <div class="chips"><span class="chip t" id="chipToday">Today –</span><span class="chip" id="chipWeek">Week –</span><span class="chip">VNT</span></div></div></div>
+      <div class="bd">
+        <div id="ticketBox">
+          <div class="lbl">Ticket</div>
+          <div class="search" id="searchBox">
+            <input id="q" type="search" placeholder="Search Trello cards" autocomplete="off" aria-label="Search Trello cards" aria-controls="menu">
+            <div class="menu" id="menu" role="listbox" hidden></div>
+          </div>
+          <div class="sel" id="sel" hidden><div><span id="selName"></span><small id="selBoard"></small></div><button class="x" id="clear" type="button" aria-label="Clear ticket">✕</button></div>
+        </div>
+        <div id="descBox" hidden>
+          <div class="lbl">Description</div>
+          <input id="desc" placeholder="What you worked on" autocomplete="off" aria-label="Description">
+          <div class="lbl">Project</div>
+          <select id="project" aria-label="Project"><option value="">Loading projects…</option></select>
+        </div>
+        <div class="lbl">Duration</div>
+        <div class="pills" id="pills">
+          <button class="pill" type="button" data-d="30m">30m</button><button class="pill" type="button" data-d="45m">45m</button><button class="pill" type="button" data-d="1h">1h</button>
+          <button class="pill" type="button" data-d="2h">2h</button><button class="pill" type="button" data-d="4h">4h</button><button class="pill" type="button" data-d="8h">8h</button>
+          <button class="pill" type="button" data-d="other">Other…</button>
+        </div>
+        <input id="other" placeholder="1h45m · 09:00 11:30 · 4h ago 1h" autocomplete="off" aria-label="Other time" hidden style="margin-top:6px">
+        <div class="lbl">Start · Date</div>
+        <div class="two"><input id="start" type="time" aria-label="Start time (empty: ends now)"><input id="date" type="date" aria-label="Date"></div>
+        <div class="msg" id="logMsg" role="status"></div>
+      </div>
+      <div class="ft"><button class="b g" id="mode" type="button">Description instead</button><span class="sp"></span><button class="b p" id="logBtn" type="button" disabled>Log <span class="k">⌘↩</span></button></div>
+    </section>
+  </div>
+  <div class="col">
+    <section class="hud" id="totals" aria-label="Totals">
+      <div class="hd"><div class="ttl">Totals</div><span class="sp"></span>
+        <div class="seg" id="seg"><button type="button" data-p="today" class="on">Today</button><button type="button" data-p="this-week">Week</button><button type="button" data-p="this-month">Month</button></div></div>
+      <div class="bd"><div class="tot" id="tot"></div><div class="msg err" id="totMsg"></div></div>
+    </section>
+    <section class="hud" id="ask" aria-label="Ask Claude">
+      <div class="hd"><div class="ring"><span>✳</span></div>
+        <div><div class="ttl">Ask Claude</div><div class="chips"><span class="chip">sonnet 5.5</span><span class="chip t" id="askClock" hidden>0:00</span></div></div></div>
+      <div class="bd">
+        <textarea id="prompt" placeholder="log yesterday 9–12 to the SSO card" aria-label="Prompt"></textarea>
+        <div class="asked" id="asked"></div>
+        <div id="reply" aria-live="polite"></div>
+      </div>
+      <div class="ft"><span class="sp"></span><button class="b" id="stopBtn" type="button" hidden>Stop</button><button class="b p" id="sendBtn" type="button">Send <span class="k">⌘↩</span></button></div>
+    </section>
+  </div>
+</main>
+<script>
+'use strict';
+const $ = (id) => document.getElementById(id);
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+const hm = (s) => `${Math.floor(s / 3600)}:${String(Math.floor(s % 3600 / 60)).padStart(2, '0')}`;
+const hms = (s) => `${hm(s)}:${String(s % 60).padStart(2, '0')}`;
+const vnt = (iso) => new Date(iso).toLocaleTimeString('en-GB', { timeZone: 'Asia/Ho_Chi_Minh', hour: '2-digit', minute: '2-digit' });
+const today = () => new Date().toLocaleDateString('en-CA');
+// ?dry makes every Log a dry run, for checks that must not create entries.
+const DRY = new URLSearchParams(location.search).has('dry');
+
+async function api(path, body) {
+  const init = body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
+  const r = await fetch(path, init);
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error || `${r.status} ${r.statusText}`);
+  return data;
+}
+
+// ---- Log ----
+const st = { card: null, desc: false, dur: null, hits: [], hi: -1, busy: false, projects: false };
+
+function ready() {
+  const what = st.desc ? $('desc').value.trim() && $('project').value : st.card;
+  const when = st.dur === 'other' ? $('other').value.trim() : st.dur;
+  return Boolean(what && when) && !st.busy;
+}
+
+function paintLog() {
+  $('logBtn').disabled = !ready();
+  $('logBtn').firstChild.textContent = st.dur && st.dur !== 'other' ? `Log ${st.dur} ` : 'Log ';
+  for (const p of $('pills').children) p.classList.toggle('on', p.dataset.d === st.dur);
+  $('other').hidden = st.dur !== 'other';
+  $('start').hidden = st.dur === 'other';
+  $('ticketBox').hidden = st.desc;
+  $('descBox').hidden = !st.desc;
+  $('mode').textContent = st.desc ? 'Ticket instead' : 'Description instead';
+  $('searchBox').hidden = Boolean(st.card);
+  $('sel').hidden = !st.card;
+  if (st.card) { $('selName').textContent = `#${st.card.number} ${st.card.name}`; $('selBoard').textContent = st.card.board; }
+}
+
+let searchTimer, searchSeq = 0;
+$('q').addEventListener('input', () => {
+  clearTimeout(searchTimer);
+  const q = $('q').value.trim();
+  if (q.length < 2) { closeMenu(); return; }
+  searchTimer = setTimeout(async () => {
+    const seq = ++searchSeq;
+    try {
+      const hits = await api(`/api/search?q=${encodeURIComponent(q)}`);
+      if (seq === searchSeq) showMenu(hits);
+    } catch (e) { if (seq === searchSeq) showMenu([], e.message); }
+  }, 250);
+});
+
+function showMenu(hits, error) {
+  st.hits = hits; st.hi = hits.length ? 0 : -1;
+  const m = $('menu');
+  m.replaceChildren(); m.hidden = false;
+  if (!hits.length) { m.append(el('div', 'none', error || 'No open cards match')); return; }
+  hits.forEach((h, i) => {
+    const b = el('button', i === st.hi ? 'h' : '', `#${h.number} ${h.name}`);
+    b.type = 'button'; b.setAttribute('role', 'option');
+    b.append(el('small', '', h.board));
+    b.addEventListener('mousedown', (ev) => ev.preventDefault());   // keep focus in the field
+    b.addEventListener('click', () => pick(h));
+    m.append(b);
+  });
+}
+function closeMenu() { $('menu').hidden = true; st.hits = []; st.hi = -1; }
+function pick(h) { st.card = h; $('q').value = ''; closeMenu(); paintLog(); }
+
+$('q').addEventListener('keydown', (ev) => {
+  if ($('menu').hidden || !st.hits.length) return;
+  if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+    ev.preventDefault();
+    st.hi = (st.hi + (ev.key === 'ArrowDown' ? 1 : -1) + st.hits.length) % st.hits.length;
+    [...$('menu').children].forEach((b, i) => b.classList.toggle('h', i === st.hi));
+  } else if (ev.key === 'Enter' && !(ev.metaKey || ev.ctrlKey)) { ev.preventDefault(); pick(st.hits[st.hi]); }
+  else if (ev.key === 'Escape') closeMenu();
+});
+$('q').addEventListener('blur', () => setTimeout(closeMenu, 150));
+$('clear').addEventListener('click', () => { st.card = null; paintLog(); $('q').focus(); });
+
+$('pills').addEventListener('click', (ev) => {
+  const d = ev.target.closest('.pill')?.dataset.d;
+  if (!d) return;
+  st.dur = d; paintLog();
+  if (d === 'other') $('other').focus();
+});
+for (const id of ['other', 'desc', 'project']) for (const t of ['input', 'change']) $(id).addEventListener(t, paintLog);
+
+$('mode').addEventListener('click', async () => {
+  st.desc = !st.desc; paintLog();
+  if (!st.desc || st.projects) return;
+  st.projects = true;
+  try {
+    const list = await api('/api/projects');
+    const sel = $('project');
+    sel.replaceChildren(new Option('Choose a project', ''));
+    list.sort((a, b) => a.name.localeCompare(b.name)).forEach((p) => sel.append(new Option(p.name, p.id)));
+  } catch (e) {
+    st.projects = false;
+    $('project').replaceChildren(new Option(`Could not load projects: ${e.message}`, ''));
+  }
+});
+
+function timeArgs() {
+  if (st.dur === 'other') return $('other').value.trim().split(/\s+/);
+  return $('start').value ? [$('start').value, st.dur] : [st.dur];
+}
+
+async function submitLog() {
+  if (!ready()) return;
+  st.busy = true; paintLog();   // one tap, one entry: the button stays off until the answer
+  const msg = $('logMsg');
+  msg.className = 'msg muted'; msg.textContent = 'Logging…';
+  const body = st.desc ? { description: $('desc').value.trim(), project_id: $('project').value } : { card_url: st.card.url };
+  body.args = timeArgs();
+  body.date = $('date').value === today() ? '' : $('date').value;
+  body.dry_run = DRY;
+  try {
+    const o = await api('/api/log', body);
+    msg.className = 'msg ok'; msg.replaceChildren();
+    const what = o.card_number ? `#${o.card_number}` : o.description;
+    let line = `${o.dry_run ? 'Dry run: ' : '✓ '}${what} · ${vnt(o.start)}–${vnt(o.end)} · ${hms(o.duration)}`;
+    if (o.project_total_today) line += ` · ${o.project_total_today.name} today ${hm(o.project_total_today.duration)}`;
+    msg.append(el('div', '', line));
+    if (o.link) { const a = el('a', '', 'Open in Clockify ↗'); a.href = o.link; a.target = '_blank'; a.rel = 'noopener'; msg.append(a); }
+    for (const w of o.warnings) msg.append(el('div', 'muted', w));
+    refreshChips(); loadTotals();
+  } catch (e) { msg.className = 'msg err'; msg.textContent = e.message; }
+  st.busy = false; paintLog();
+}
+$('logBtn').addEventListener('click', submitLog);
+$('log').addEventListener('keydown', (ev) => { if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey)) { ev.preventDefault(); submitLog(); } });
+
+// ---- Totals ----
+let preset = 'today';
+async function loadTotals() {
+  const p = preset;
+  try {
+    const s = await api(`/api/totals?preset=${p}`);
+    if (p !== preset) return;
+    $('totMsg').textContent = '';
+    const t = $('tot');
+    t.replaceChildren();
+    for (const proj of s.projects) {
+      t.append(el('span', '', proj.name), el('span', 'n', hm(proj.duration)));
+      for (const task of proj.tasks) t.append(el('span', 'sub', task.name), el('span', 'sub n', hm(task.duration)));
+    }
+    if (!s.projects.length) t.append(el('span', 'muted', 'Nothing logged'), el('span', 'n muted', '0:00'));
+    t.append(el('span', 'sum', 'Total'), el('span', 'sum n', hm(s.total)));
+  } catch (e) { $('totMsg').textContent = e.message; }
+}
+$('seg').addEventListener('click', (ev) => {
+  const p = ev.target.closest('button')?.dataset.p;
+  if (!p) return;
+  preset = p;
+  for (const b of $('seg').children) b.classList.toggle('on', b.dataset.p === p);
+  loadTotals();
+});
+function refreshChips() {
+  for (const [p, id, name] of [['today', 'chipToday', 'Today'], ['this-week', 'chipWeek', 'Week']]) {
+    api(`/api/totals?preset=${p}`).then((s) => { $(id).textContent = `${name} ${hm(s.total)}`; }).catch(() => {});
+  }
+}
+
+// ---- Ask Claude ----
+const ask = { es: null, running: false, started: 0, timer: null, gotResult: false };
+function clockTick() {
+  const s = Math.max(0, Math.floor((Date.now() - ask.started) / 1000));
+  $('askClock').textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
+function setRunning(on) {
+  ask.running = on;
+  $('stopBtn').hidden = !on; $('sendBtn').disabled = on; $('askClock').hidden = !on;
+  clearInterval(ask.timer);
+  if (on) { clockTick(); ask.timer = setInterval(clockTick, 1000); }
+}
+// Every connection replays the run from its start event, which clears the reply first.
+function follow() {
+  if (ask.es) ask.es.close();
+  const es = new EventSource('/api/ask/events');
+  ask.es = es;
+  es.onmessage = (m) => {
+    const e = JSON.parse(m.data), r = $('reply');
+    switch (e.type) {
+      case 'idle': es.close(); break;
+      case 'start':
+        r.replaceChildren(); $('asked').textContent = e.prompt;
+        ask.started = e.started; ask.gotResult = false; setRunning(true); break;
+      case 'text': r.append(el('div', 'reply', e.text)); break;
+      case 'bash': r.append(el('div', 'tool', 'Bash'), el('div', 'code', e.command)); break;
+      case 'result': {
+        ask.gotResult = true;
+        const last = r.lastElementChild;
+        if (e.is_error || !last || last.textContent !== e.text) r.append(el('div', e.is_error ? 'reply err' : 'reply', e.text));
+        break;
+      }
+      case 'exit':
+        es.close(); setRunning(false);
+        if (e.code !== 0 && !ask.gotResult) r.append(el('div', 'reply err', [`claude exited (${e.code ?? 'stopped'})`, ...e.stderr].join('\n')));
+        break;
+    }
+  };
+}
+async function send() {
+  const prompt = $('prompt').value.trim();
+  if (!prompt || ask.running) return;
+  $('sendBtn').disabled = true;
+  try { await api('/api/ask', { prompt }); $('prompt').value = ''; follow(); }
+  catch (e) { $('reply').replaceChildren(el('div', 'reply err', e.message)); $('sendBtn').disabled = false; }
+}
+$('sendBtn').addEventListener('click', send);
+$('prompt').addEventListener('keydown', (ev) => { if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey)) { ev.preventDefault(); send(); } });
+$('stopBtn').addEventListener('click', () => api('/api/ask/stop', {}).catch(() => {}));
+document.addEventListener('visibilitychange', () => { if (!document.hidden && ask.running) follow(); });
+
+// ---- Start ----
+if (matchMedia('(pointer: coarse)').matches) for (const k of document.querySelectorAll('.k')) k.hidden = true;
+$('date').value = today();
+paintLog(); refreshChips(); loadTotals(); follow();
+</script>
 </body>
 </html>

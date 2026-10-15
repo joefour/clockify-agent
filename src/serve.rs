@@ -1,6 +1,8 @@
 //! `clockify serve`: the dashboard. Two loopback listeners share one router; a guard in
 //! front of each checks Host, Origin and, on the tailnet one, the Tailscale login.
 
+use std::convert::Infallible;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -8,12 +10,16 @@ use axum::extract::{Query, Request, State};
 use axum::http::{HeaderMap, Method, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Response};
+use axum::response::sse::{self, Sse};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use futures_util::Stream;
 use serde::Deserialize;
 use serde_json::json;
 use tokio::net::TcpListener;
+use tokio::signal::unix::{SignalKind, signal};
 
+use crate::ask::{Ask, StartError};
 use crate::clockify::{self, Client, Project};
 use crate::config::{self, Config};
 use crate::trello::{self, CardHit};
@@ -89,6 +95,7 @@ pub struct AppState {
     pub cfg: Config,
     pub clockify_base: String,
     pub trello_base: String,
+    pub ask: Arc<Ask>,
 }
 
 impl AppState {
@@ -131,6 +138,9 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/search", get(search))
         .route("/api/projects", get(projects))
         .route("/api/log", post(log))
+        .route("/api/ask", post(ask_start))
+        .route("/api/ask/events", get(ask_events))
+        .route("/api/ask/stop", post(ask_stop))
         .with_state(state)
 }
 
@@ -206,12 +216,41 @@ async fn log(State(s): Shared, Json(b): Json<LogBody>) -> Result<Json<LogOutcome
     Ok(Json(outcome))
 }
 
-/// Serves until the process is stopped.
-pub fn run(owner: String, tailnet_host: String) -> Result<()> {
-    tokio::runtime::Runtime::new().context("could not start the async runtime")?.block_on(serve(owner, tailnet_host))
+#[derive(Deserialize)]
+struct AskBody {
+    prompt: String,
 }
 
-async fn serve(owner: String, tailnet_host: String) -> Result<()> {
+async fn ask_start(State(s): Shared, Json(b): Json<AskBody>) -> Result<StatusCode, ApiError> {
+    if b.prompt.trim().is_empty() {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "type a prompt first".into()));
+    }
+    match s.ask.start(b.prompt) {
+        Ok(()) => Ok(StatusCode::ACCEPTED),
+        Err(StartError::Busy) => Err(ApiError(StatusCode::CONFLICT, "a run is already going".into())),
+        Err(StartError::Spawn(e)) => Err(ApiError(StatusCode::INTERNAL_SERVER_ERROR, format!("could not start claude: {e}"))),
+    }
+}
+
+async fn ask_events(State(s): Shared) -> Sse<impl Stream<Item = Result<sse::Event, Infallible>>> {
+    let events = futures_util::stream::unfold(s.ask.follow(), |mut rx| async move {
+        let e = rx.recv().await?;
+        Some((Ok(sse::Event::default().json_data(&e).expect("events serialize")), rx))
+    });
+    Sse::new(events).keep_alive(sse::KeepAlive::default())
+}
+
+async fn ask_stop(State(s): Shared) -> StatusCode {
+    s.ask.stop();
+    StatusCode::ACCEPTED
+}
+
+/// Serves until SIGTERM or Ctrl-C. Ask Claude runs start in `repo`.
+pub fn run(repo: PathBuf, owner: String, tailnet_host: String) -> Result<()> {
+    tokio::runtime::Runtime::new().context("could not start the async runtime")?.block_on(serve(repo, owner, tailnet_host))
+}
+
+async fn serve(repo: PathBuf, owner: String, tailnet_host: String) -> Result<()> {
     let local = TcpListener::bind(("127.0.0.1", LOCAL_PORT))
         .await
         .with_context(|| format!("could not listen on 127.0.0.1:{LOCAL_PORT}"))?;
@@ -226,10 +265,19 @@ async fn serve(owner: String, tailnet_host: String) -> Result<()> {
         cfg: config::load(),
         clockify_base: clockify::BASE_URL.into(),
         trello_base: trello::TRELLO_API.into(),
+        ask: Arc::new(Ask::new("claude", repo)),
     });
+    let ask = state.ask.clone();
     let local = axum::serve(local, gated(router(state.clone()), Gate::Local));
     let tailnet = axum::serve(tailnet, gated(router(state), Gate::Tailnet { owner, host: tailnet_host }));
-    tokio::try_join!(async { local.await }, async { tailnet.await })?;
+    let mut term = signal(SignalKind::terminate()).context("could not watch SIGTERM")?;
+    tokio::select! {
+        r = async { tokio::try_join!(async { local.await }, async { tailnet.await }) } => { r?; }
+        _ = term.recv() => {}
+        _ = tokio::signal::ctrl_c() => {}
+    }
+    // A run would outlive the server: claude has its own process group and approvals off.
+    ask.stop();
     Ok(())
 }
 
@@ -319,6 +367,7 @@ mod tests {
             },
             clockify_base: clockify.into(),
             trello_base: trello.into(),
+            ask: Arc::new(Ask::new("claude", PathBuf::from("/tmp"))),
         })
     }
 

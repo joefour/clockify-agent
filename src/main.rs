@@ -1,3 +1,4 @@
+mod ask;
 mod clockify;
 mod config;
 mod serve;
@@ -5,6 +6,8 @@ mod summary;
 mod timeutil;
 mod trello;
 mod validator;
+
+use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, FixedOffset, Local, NaiveDate, NaiveTime, SecondsFormat, TimeDelta, Timelike, Utc};
@@ -69,6 +72,9 @@ enum Cmd {
     },
     /// Run the dashboard: http://127.0.0.1:8767, and 127.0.0.1:8768 for `tailscale serve`
     Serve {
+        /// Checkout whose .mcp.json and skills Ask Claude runs use
+        #[arg(long, value_name = "DIR")]
+        repo: PathBuf,
         /// Tailscale login allowed through the tailnet listener (empty: nobody)
         #[arg(long, value_name = "LOGIN", default_value = "")]
         owner: String,
@@ -229,7 +235,7 @@ fn main() {
             to.as_deref().unwrap_or(""),
             by_task,
         ),
-        Cmd::Serve { owner, tailnet_host } => serve::run(owner, tailnet_host),
+        Cmd::Serve { repo, owner, tailnet_host } => serve::run(repo, owner, tailnet_host),
     };
     if let Err(e) = result {
         eprintln!("Error: {e:#}");

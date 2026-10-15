@@ -261,7 +261,7 @@ async function submitLog() {
   msg.className = 'msg muted'; msg.textContent = 'Logging…';
   const body = st.desc ? { description: $('desc').value.trim(), project_id: $('project').value } : { card_url: st.card.url };
   body.args = timeArgs();
-  body.date = dateTouched ? $('date').value : '';
+  body.date = dateTouched && $('date').value !== today() ? $('date').value : '';
   body.dry_run = DRY;
   try {
     const o = await api('/api/log', body);

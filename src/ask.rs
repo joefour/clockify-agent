@@ -127,7 +127,7 @@ impl RunState {
     fn push(&mut self, e: AskEvent) {
         self.bytes += e.size();
         self.events.push_back(e);
-        while self.bytes > CAP && self.events.len() > 1 {
+        while self.events.len() > 1 && self.bytes - self.events[0].size() >= CAP {
             let old = self.events.pop_front().expect("more than one event");
             self.bytes -= old.size();
             self.first += 1;
@@ -382,7 +382,8 @@ mod tests {
         for _ in 0..3 {
             s.push(AskEvent::Text { text: "x".repeat(30 * 1024) });
         }
-        assert_eq!((s.events.len(), s.first, s.bytes), (2, 1, 60 * 1024));
+        // 90 KB: the first is trimmed to 4 KB, as in the tray; dropping it would leave 60 KB.
+        assert_eq!((s.events.len(), s.first, s.bytes), (3, 0, CAP));
         s.push(AskEvent::Text { text: "y".repeat(100 * 1024) });
         assert_eq!((s.events.len(), s.first), (1, 3));
         assert_eq!(s.events.len(), 1);
@@ -396,13 +397,23 @@ mod tests {
     #[test]
     fn the_cap_cut_never_splits_a_character() {
         let mut s = RunState::default();
-        // 2-byte chars: the cut point of an odd excess lands inside one.
-        s.push(AskEvent::Text { text: format!("a{}", "é".repeat(CAP / 2 + 10)) });
-        assert!(s.bytes <= CAP);
+        // Excess is 1 byte: inside the first 2-byte char, so the cut rounds up to 2.
+        s.push(AskEvent::Text { text: format!("{}a", "é".repeat(CAP / 2)) });
+        assert_eq!(s.bytes, CAP - 1);
         match &s.events[0] {
-            AskEvent::Text { text } => assert!(text.chars().all(|c| c == 'é') && text.len() == s.bytes),
+            AskEvent::Text { text } => assert!(text.starts_with('é') && text.ends_with('a') && text.len() == s.bytes),
             e => panic!("{e:?}"),
         }
+    }
+
+    #[test]
+    fn the_cap_trims_the_text_when_dropping_it_whole_would_overshoot() {
+        let mut s = RunState::default();
+        s.push(AskEvent::Text { text: "x".repeat(60 * 1024) });
+        s.push(AskEvent::Exit { code: Some(0), stderr: vec!["e".repeat(5 * 1024); 2] });
+        assert_eq!((s.events.len(), s.first), (2, 0));
+        assert_eq!(s.bytes, CAP);
+        assert!(matches!(&s.events[0], AskEvent::Text { text } if text.len() == 54 * 1024));
     }
 
     fn fake_claude(name: &str, script: &str) -> (String, PathBuf) {

@@ -1,5 +1,6 @@
 mod clockify;
 mod config;
+mod serve;
 mod summary;
 mod timeutil;
 mod trello;
@@ -65,6 +66,15 @@ enum Cmd {
         /// End date (required if no preset)
         #[arg(long, value_name = "YYYY-MM-DD")]
         to: Option<String>,
+    },
+    /// Run the dashboard: http://127.0.0.1:8767, and 127.0.0.1:8768 for `tailscale serve`
+    Serve {
+        /// Tailscale login allowed through the tailnet listener (empty: nobody)
+        #[arg(long, value_name = "LOGIN", default_value = "")]
+        owner: String,
+        /// The tailnet address pages are served from, as dns-name:port
+        #[arg(long, value_name = "HOST", default_value = "")]
+        tailnet_host: String,
     },
 }
 
@@ -219,6 +229,7 @@ fn main() {
             to.as_deref().unwrap_or(""),
             by_task,
         ),
+        Cmd::Serve { owner, tailnet_host } => serve::run(owner, tailnet_host),
     };
     if let Err(e) = result {
         eprintln!("Error: {e:#}");

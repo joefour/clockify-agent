@@ -4,11 +4,11 @@
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::clockify::{http_agent, null_default};
 
-const TRELLO_API: &str = "https://api.trello.com/1";
+pub(crate) const TRELLO_API: &str = "https://api.trello.com/1";
 
 #[derive(Debug, Default, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -106,6 +106,81 @@ fn fetch_card_basic(url: &str, card_number: &str) -> Result<CardInfo> {
     Ok(info)
 }
 
+/// One card from a search, as the dashboard lists it.
+#[derive(Debug, PartialEq, Serialize)]
+pub struct CardHit {
+    pub id: String,
+    /// The card number Clockify tasks are named after ("#482").
+    pub number: i64,
+    pub name: String,
+    pub url: String,
+    pub board: String,
+}
+
+/// Up to 10 open cards matching `query`, from every board the token can see, through
+/// the Trello REST API at `base`.
+pub fn search_cards(base: &str, query: &str, api_key: &str, token: &str) -> Result<Vec<CardHit>> {
+    if api_key.is_empty() || token.is_empty() {
+        bail!("Trello key and token are not configured");
+    }
+
+    #[derive(Deserialize)]
+    struct Found {
+        #[serde(default)]
+        cards: Vec<Card>,
+    }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Card {
+        id: String,
+        id_short: i64,
+        #[serde(default, deserialize_with = "null_default")]
+        name: String,
+        #[serde(default, deserialize_with = "null_default")]
+        short_url: String,
+        #[serde(default)]
+        closed: bool,
+        #[serde(default)]
+        board: Option<Board>,
+    }
+    #[derive(Deserialize)]
+    struct Board {
+        #[serde(default, deserialize_with = "null_default")]
+        name: String,
+    }
+
+    let mut resp = http_agent()
+        .get(format!("{base}/search"))
+        .query("query", query)
+        .query("modelTypes", "cards")
+        .query("partial", "true")
+        .query("cards_limit", "10")
+        .query("card_fields", "name,idShort,shortUrl,closed")
+        .query("card_board", "true")
+        .query("board_fields", "name")
+        .query("key", api_key)
+        .query("token", token)
+        .call()
+        .context("Trello search failed")?;
+    // The status only: Trello's error body can echo the request.
+    if !resp.status().is_success() {
+        bail!("Trello search failed: {}", resp.status());
+    }
+    let found: Found = resp.body_mut().read_json().context("Trello search returned invalid JSON")?;
+    Ok(found
+        .cards
+        .into_iter()
+        .filter(|c| !c.closed)
+        .map(|c| CardHit {
+            id: c.id,
+            number: c.id_short,
+            name: c.name,
+            url: c.short_url,
+            board: c.board.map(|b| b.name).unwrap_or_default(),
+        })
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -180,5 +255,56 @@ mod tests {
     fn api_skipped_without_credentials() {
         let info = fetch_card_with_api("http://127.0.0.1:1", "abc", "320".into(), "T".into(), "", "t");
         assert_eq!(info, CardInfo { card_number: "320".into(), title: "T".into(), ..Default::default() });
+    }
+
+    #[test]
+    fn search_cards_lists_open_cards() {
+        let mut server = mockito::Server::new();
+        let search = server
+            .mock("GET", "/search")
+            .match_query(Matcher::AllOf(vec![
+                Matcher::UrlEncoded("query".into(), "login & sso".into()),
+                Matcher::UrlEncoded("modelTypes".into(), "cards".into()),
+                Matcher::UrlEncoded("partial".into(), "true".into()),
+                Matcher::UrlEncoded("cards_limit".into(), "10".into()),
+                Matcher::UrlEncoded("card_board".into(), "true".into()),
+                Matcher::UrlEncoded("key".into(), "k".into()),
+                Matcher::UrlEncoded("token".into(), "t".into()),
+            ]))
+            .with_body(
+                r#"{"cards":[
+                    {"id":"c1","idShort":482,"name":"Login fails after SSO","shortUrl":"https://trello.com/c/AbC123","closed":false,"board":{"id":"b1","name":"RMS"}},
+                    {"id":"c2","idShort":455,"name":"Old login copy","shortUrl":"https://trello.com/c/Old1","closed":true,"board":{"id":"b1","name":"RMS"}}
+                ],"boards":[]}"#,
+            )
+            .create();
+
+        let hits = search_cards(&server.url(), "login & sso", "k", "t").unwrap();
+
+        search.assert();
+        assert_eq!(
+            hits,
+            vec![CardHit {
+                id: "c1".into(),
+                number: 482,
+                name: "Login fails after SSO".into(),
+                url: "https://trello.com/c/AbC123".into(),
+                board: "RMS".into()
+            }]
+        );
+    }
+
+    #[test]
+    fn search_cards_needs_credentials() {
+        let err = search_cards("http://127.0.0.1:1", "login", "", "t").unwrap_err();
+        assert_eq!(err.to_string(), "Trello key and token are not configured");
+    }
+
+    #[test]
+    fn search_cards_reports_trello_errors() {
+        let mut server = mockito::Server::new();
+        server.mock("GET", "/search").match_query(Matcher::Any).with_status(401).with_body("invalid token").create();
+        let err = search_cards(&server.url(), "login", "k", "t").unwrap_err();
+        assert_eq!(err.to_string(), "Trello search failed: 401 Unauthorized");
     }
 }

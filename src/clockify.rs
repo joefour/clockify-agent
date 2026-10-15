@@ -8,7 +8,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::json;
 
-const BASE_URL: &str = "https://api.clockify.me/api/v1";
+pub(crate) const BASE_URL: &str = "https://api.clockify.me/api/v1";
 
 /// The agent every HTTP call uses: 10 s timeout, and 4xx/5xx returned as responses
 /// so callers can report the status.
@@ -93,7 +93,7 @@ impl TimeEntry {
     }
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct Project {
     #[serde(default, deserialize_with = "null_default")]
     pub id: String,

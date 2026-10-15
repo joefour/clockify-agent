@@ -4,14 +4,20 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use axum::extract::{Request, State};
+use axum::extract::{Query, Request, State};
 use axum::http::{HeaderMap, Method, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
+use serde::Deserialize;
 use serde_json::json;
 use tokio::net::TcpListener;
+
+use crate::clockify::{self, Client, Project};
+use crate::config::{self, Config};
+use crate::trello::{self, CardHit};
+use crate::{LogOutcome, LogRequest, SummaryOutcome, log_entry, now_secs, random_percent, summarize};
 
 /// The Mac's own listener: the tray's Dashboard button opens it.
 pub const LOCAL_PORT: u16 = 8767;
@@ -78,8 +84,126 @@ pub fn gated(app: Router, gate: Gate) -> Router {
     app.layer(middleware::from_fn_with_state(Arc::new(gate), guard))
 }
 
-pub fn router() -> Router {
-    Router::new().route("/", get(|| async { Html(PAGE) }))
+/// What every handler shares. The bases are the real APIs, except in tests.
+pub struct AppState {
+    pub cfg: Config,
+    pub clockify_base: String,
+    pub trello_base: String,
+}
+
+impl AppState {
+    fn client(&self) -> Client {
+        let mut c = Client::new(&self.cfg.api_key, &self.cfg.workspace_id);
+        c.base_url = self.clockify_base.clone();
+        c
+    }
+}
+
+type Shared = State<Arc<AppState>>;
+
+/// An error the page shows under the card it came from.
+struct ApiError(StatusCode, String);
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        (self.0, Json(json!({ "error": self.1 }))).into_response()
+    }
+}
+
+impl From<anyhow::Error> for ApiError {
+    fn from(e: anyhow::Error) -> Self {
+        ApiError(StatusCode::BAD_REQUEST, format!("{e:#}"))
+    }
+}
+
+/// Runs the CLI's blocking ureq code off the async threads.
+async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T> + Send + 'static) -> Result<T, ApiError> {
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(ApiError::from)
+}
+
+pub fn router(state: Arc<AppState>) -> Router {
+    Router::new()
+        .route("/", get(|| async { Html(PAGE) }))
+        .route("/api/totals", get(totals))
+        .route("/api/search", get(search))
+        .route("/api/projects", get(projects))
+        .route("/api/log", post(log))
+        .with_state(state)
+}
+
+#[derive(Deserialize)]
+struct TotalsQuery {
+    preset: String,
+}
+
+async fn totals(State(s): Shared, Query(q): Query<TotalsQuery>) -> Result<Json<SummaryOutcome>, ApiError> {
+    if !["today", "this-week", "this-month"].contains(&q.preset.as_str()) {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "preset must be today, this-week or this-month".into()));
+    }
+    Ok(Json(blocking(move || summarize(&s.cfg, &s.client(), &q.preset, "", "")).await?))
+}
+
+#[derive(Deserialize)]
+struct SearchQuery {
+    #[serde(default)]
+    q: String,
+}
+
+/// Under 2 characters searches nothing, so the first keystroke costs no Trello call.
+async fn search(State(s): Shared, Query(q): Query<SearchQuery>) -> Result<Json<Vec<CardHit>>, ApiError> {
+    let q = q.q.trim().to_string();
+    if q.chars().count() < 2 {
+        return Ok(Json(Vec::new()));
+    }
+    Ok(Json(
+        blocking(move || trello::search_cards(&s.trello_base, &q, &s.cfg.trello_api_key, &s.cfg.trello_token)).await?,
+    ))
+}
+
+async fn projects(State(s): Shared) -> Result<Json<Vec<Project>>, ApiError> {
+    Ok(Json(blocking(move || s.client().list_projects().context("Clockify API error")).await?))
+}
+
+/// The page's log form: a card URL, or a description with a project, plus the CLI's
+/// positional time arguments.
+#[derive(Deserialize)]
+struct LogBody {
+    #[serde(default)]
+    card_url: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    project_id: String,
+    args: Vec<String>,
+    #[serde(default)]
+    date: String,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+async fn log(State(s): Shared, Json(b): Json<LogBody>) -> Result<Json<LogOutcome>, ApiError> {
+    let mut args = b.args;
+    if !b.card_url.is_empty() {
+        args.insert(0, b.card_url);
+    }
+    let req = LogRequest {
+        args,
+        date: b.date,
+        dry_run: b.dry_run,
+        project_id: b.project_id,
+        task_id: String::new(),
+        description: b.description,
+    };
+    let outcome = blocking(move || {
+        let fetch = |url: &str| trello::fetch_card(url, &s.cfg.trello_api_key, &s.cfg.trello_token);
+        log_entry(&s.cfg, &s.client(), &req, fetch, now_secs(), random_percent())
+    })
+    .await?;
+    eprintln!("logged{}: {} {} ({}s)", if outcome.dry_run { " (dry run)" } else { "" }, outcome.description, outcome.start, outcome.duration);
+    Ok(Json(outcome))
 }
 
 /// Serves until the process is stopped.
@@ -98,8 +222,13 @@ async fn serve(owner: String, tailnet_host: String) -> Result<()> {
         eprintln!("no --owner: the tailnet listener refuses every request");
     }
     eprintln!("dashboard on http://127.0.0.1:{LOCAL_PORT}; tailnet https://{tailnet_host} for {owner}");
-    let local = axum::serve(local, gated(router(), Gate::Local));
-    let tailnet = axum::serve(tailnet, gated(router(), Gate::Tailnet { owner, host: tailnet_host }));
+    let state = Arc::new(AppState {
+        cfg: config::load(),
+        clockify_base: clockify::BASE_URL.into(),
+        trello_base: trello::TRELLO_API.into(),
+    });
+    let local = axum::serve(local, gated(router(state.clone()), Gate::Local));
+    let tailnet = axum::serve(tailnet, gated(router(state), Gate::Tailnet { owner, host: tailnet_host }));
     tokio::try_join!(async { local.await }, async { tailnet.await })?;
     Ok(())
 }
@@ -169,10 +298,113 @@ mod tests {
 
     #[tokio::test]
     async fn the_gate_answers_403_before_any_route() {
-        let app = gated(router(), Gate::Local);
+        let app = gated(router(state("http://127.0.0.1:1", "http://127.0.0.1:1")), Gate::Local);
         let bad = Request::get("/").header("host", "evil.example:8767").body(Body::empty()).unwrap();
         assert_eq!(app.clone().oneshot(bad).await.unwrap().status(), StatusCode::FORBIDDEN);
         let ok = Request::get("/").header("host", "127.0.0.1:8767").body(Body::empty()).unwrap();
         assert_eq!(app.oneshot(ok).await.unwrap().status(), StatusCode::OK);
+    }
+
+    use crate::config::Config;
+
+    fn state(clockify: &str, trello: &str) -> Arc<AppState> {
+        Arc::new(AppState {
+            cfg: Config {
+                api_key: "k".into(),
+                workspace_id: "ws123".into(),
+                user_id: "u1".into(),
+                trello_api_key: "tk".into(),
+                trello_token: "tt".into(),
+                ..Default::default()
+            },
+            clockify_base: clockify.into(),
+            trello_base: trello.into(),
+        })
+    }
+
+    fn local_get(uri: &str) -> Request<Body> {
+        Request::get(uri).header("host", "127.0.0.1:8767").body(Body::empty()).unwrap()
+    }
+
+    fn local_post(uri: &str, body: serde_json::Value) -> Request<Body> {
+        Request::post(uri)
+            .header("host", "127.0.0.1:8767")
+            .header("origin", "http://127.0.0.1:8767")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    }
+
+    async fn call(app: Router, req: Request<Body>) -> (StatusCode, serde_json::Value) {
+        let resp = app.oneshot(req).await.unwrap();
+        let status = resp.status();
+        let body = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        (status, serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null))
+    }
+
+    #[tokio::test]
+    async fn totals_for_a_preset() {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("GET", "/workspaces/ws123/user/u1/time-entries")
+            .match_query(mockito::Matcher::Any)
+            .with_body(r#"[{"projectId":"p1","description":"Standup","timeInterval":{"start":"2026-04-05T02:00:00Z","end":"2026-04-05T02:30:00Z"}}]"#)
+            .create_async()
+            .await;
+        server.mock("GET", "/workspaces/ws123/projects").with_body(r#"[{"id":"p1","name":"Internal"}]"#).create_async().await;
+        let app = gated(router(state(&server.url(), "http://127.0.0.1:1")), Gate::Local);
+
+        let (status, body) = call(app.clone(), local_get("/api/totals?preset=today")).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!((body["total"].as_i64(), body["projects"][0]["name"].as_str()), (Some(1800), Some("Internal")));
+
+        let (status, body) = call(app, local_get("/api/totals?preset=yesterday")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"], "preset must be today, this-week or this-month");
+    }
+
+    #[tokio::test]
+    async fn log_answers_the_outcome_or_the_error() {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("GET", "/workspaces/ws123/user/u1/time-entries")
+            .match_query(mockito::Matcher::Any)
+            .with_body("[]")
+            .create_async()
+            .await;
+        let app = gated(router(state(&server.url(), "http://127.0.0.1:1")), Gate::Local);
+
+        let dry = json!({"description": "fix login", "project_id": "p1", "args": ["09:00", "1h"], "date": "2026-04-05", "dry_run": true});
+        let (status, body) = call(app.clone(), local_post("/api/log", dry)).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["dry_run"], true);
+        assert_eq!(body["description"], "fix login");
+        assert_eq!(body["start"], "2026-04-05T02:00:00Z");
+
+        let bad = json!({"description": "fix login", "project_id": "p1", "args": ["soon"]});
+        let (status, body) = call(app, local_post("/api/log", bad)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body["error"].as_str().unwrap().starts_with("invalid duration format"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn search_skips_short_queries_and_maps_hits() {
+        let mut trello = mockito::Server::new_async().await;
+        let search = trello
+            .mock("GET", "/search")
+            .match_query(mockito::Matcher::UrlEncoded("query".into(), "login".into()))
+            .with_body(r#"{"cards":[{"id":"c1","idShort":482,"name":"Login fails","shortUrl":"https://trello.com/c/AbC123","closed":false,"board":{"name":"RMS"}}]}"#)
+            .expect(1)
+            .create_async()
+            .await;
+        let app = gated(router(state("http://127.0.0.1:1", &trello.url())), Gate::Local);
+
+        let (_, body) = call(app.clone(), local_get("/api/search?q=l")).await;
+        assert_eq!(body, json!([]));
+        let (status, body) = call(app, local_get("/api/search?q=%20login%20")).await;
+
+        search.assert_async().await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, json!([{"id": "c1", "number": 482, "name": "Login fails", "url": "https://trello.com/c/AbC123", "board": "RMS"}]));
     }
 }

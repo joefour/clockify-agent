@@ -115,6 +115,7 @@ try { const t = localStorage.getItem('clockify-theme'); if (t === 'light' || t =
   .bar i { display: block; height: 100%; width: 0; background: var(--ink); }
   .small { color: var(--muted); font-size: 12px; }
   #seg { margin-top: 20px; }
+  #hoursMsg:empty { display: none; }
   table { width: 100%; border-collapse: collapse; margin-top: 12px; }
   td { padding: 9px 0; border-bottom: 1px solid var(--hair); overflow-wrap: anywhere; }
   td.n { text-align: right; white-space: nowrap; padding-left: 12px; }
@@ -149,7 +150,7 @@ try { const t = localStorage.getItem('clockify-theme'); if (t === 'light' || t =
       <h1>Clockify</h1>
     </div>
     <div class="tools">
-      <p class="meta" aria-live="polite"><span>Today <b id="mastToday">–</b></span><span>Week <b id="mastWeek">–</b></span></p>
+      <p class="meta"><span>Today <b id="mastToday">–</b></span><span>Week <b id="mastWeek">–</b></span></p>
       <div class="seg" id="theme" role="group" aria-label="Theme"><button type="button" data-t="auto">Auto</button><button type="button" data-t="light">Light</button><button type="button" data-t="dark">Dark</button></div>
       <button class="btn sm cycle" id="themeCycle" type="button">◐ Auto</button>
       <button class="btn" id="refresh" type="button">Refresh</button>
@@ -159,6 +160,7 @@ try { const t = localStorage.getItem('clockify-theme'); if (t === 'light' || t =
     <button type="button" role="tab" id="tabClock" aria-controls="clock" aria-selected="true">Clock</button>
     <button type="button" role="tab" id="tabHours" aria-controls="hours" aria-selected="false">Hours</button>
   </nav>
+  <div class="msg err" id="hoursMsg" role="status"></div>
 
   <div class="cols" id="clock" role="tabpanel" aria-labelledby="tabClock">
     <section id="log" aria-label="Log time">
@@ -167,7 +169,7 @@ try { const t = localStorage.getItem('clockify-theme'); if (t === 'light' || t =
         <label class="lbl" for="q">Ticket</label>
         <div class="search" id="searchBox">
           <input id="q" type="search" placeholder="Search a ticket or paste a Trello link" autocomplete="off" aria-controls="menu">
-          <div class="menu" id="menu" role="listbox" hidden></div>
+          <div class="menu" id="menu" hidden></div>
         </div>
         <div class="pick" id="sel" hidden>
           <div class="t"><span id="selName"></span><small id="selBoard"></small></div>
@@ -221,7 +223,6 @@ try { const t = localStorage.getItem('clockify-theme'); if (t === 'light' || t =
     </div>
     <div class="seg" id="seg" role="group" aria-label="Period"><button type="button" data-p="today" class="on">Today</button><button type="button" data-p="this-week">Week</button><button type="button" data-p="this-month">Month</button></div>
     <table><tbody id="tot"></tbody></table>
-    <div class="msg err" id="hoursMsg" role="status"></div>
   </div>
 </main>
 <script>
@@ -318,20 +319,21 @@ const CARD_LINK = /^https?:\/\/(www\.)?trello\.com\/c\/[A-Za-z0-9]+/;
 let searchTimer, searchSeq = 0;
 $('q').addEventListener('input', () => {
   clearTimeout(searchTimer);
+  const seq = ++searchSeq;   // each keystroke voids any answer still on its way
   const q = $('q').value.trim();
-  if (CARD_LINK.test(q)) { resolveLink(q); return; }
-  if (q.length < 2) { ++searchSeq; closeMenu(); return; }
-  searchTimer = setTimeout(async () => {
-    const seq = ++searchSeq;
-    try {
-      const hits = await api(`/api/search?q=${encodeURIComponent(q)}`);
-      if (seq === searchSeq) showMenu(hits);
-    } catch (e) { if (seq === searchSeq) showMenu([], e.message); }
-  }, 250);
+  if (q.length < 2) { closeMenu(); return; }
+  // Typed links wait like searches do, so a hand-typed link costs one lookup, not one per key.
+  searchTimer = setTimeout(() => (CARD_LINK.test(q) ? resolveLink(q, seq) : searchCards(q, seq)), 250);
 });
 
-async function resolveLink(link) {
-  const seq = ++searchSeq;
+async function searchCards(q, seq) {
+  try {
+    const hits = await api(`/api/search?q=${encodeURIComponent(q)}`);
+    if (seq === searchSeq) showMenu(hits);
+  } catch (e) { if (seq === searchSeq) showMenu([], e.message); }
+}
+
+async function resolveLink(link, seq) {
   showMenu([], 'Looking up the card…');
   try {
     const hit = await api(`/api/card?url=${encodeURIComponent(link)}`);
@@ -345,13 +347,14 @@ async function resolveLink(link) {
 }
 
 function showMenu(hits, note) {
+  // A menu opened after focus left the search box would have no focusout left to close it.
+  if (!$('searchBox').contains(document.activeElement)) { closeMenu(); return; }
   st.hits = hits; st.hi = hits.length ? 0 : -1;
   const m = $('menu');
   m.replaceChildren(); m.hidden = false;
   if (!hits.length) { m.append(el('div', 'none', note || 'No open cards match')); return; }
   hits.forEach((h, i) => {
     const row = el('div', i === st.hi ? 'it h' : 'it');
-    row.setAttribute('role', 'option');
     const go = el('button', 'go', `#${h.number} ${h.name}`);
     go.type = 'button';
     go.append(el('small', '', h.board));
@@ -376,7 +379,8 @@ $('q').addEventListener('keydown', (ev) => {
     [...$('menu').children].forEach((r, i) => r.classList.toggle('h', i === st.hi));
   } else if (ev.key === 'Enter' && !(ev.metaKey || ev.ctrlKey)) { ev.preventDefault(); pick(st.hits[st.hi]); }
 });
-$('q').addEventListener('blur', () => setTimeout(closeMenu, 150));
+// Focus moving into the menu's own buttons keeps it open; leaving the search box closes it.
+$('searchBox').addEventListener('focusout', () => setTimeout(() => { if (!$('searchBox').contains(document.activeElement)) closeMenu(); }, 150));
 $('clear').addEventListener('click', () => { st.card = null; paintLog(); $('q').focus(); });
 $('copySel').addEventListener('click', () => copyLink($('copySel'), st.card.url));
 

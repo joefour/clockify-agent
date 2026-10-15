@@ -593,6 +593,18 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_page_reports_totals_errors_on_both_tabs_and_keeps_the_menu_reachable() {
+        let app = gated(router(state("http://127.0.0.1:1", "http://127.0.0.1:1")), Gate::Local);
+        let resp = app.oneshot(local_get("/")).await.unwrap();
+        let html = String::from_utf8(axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap().to_vec()).unwrap();
+        let at = |needle: &str| html.find(needle).unwrap_or_else(|| panic!("page lacks {needle}"));
+        assert!(at(r#"id="hoursMsg""#) < at(r#"id="hours""#), "a totals error must show on the Clock tab too");
+        assert!(!html.contains(r#"class="meta" aria-live"#), "the masthead totals must not re-announce on every load");
+        assert!(!html.contains(r#"role="listbox""#) && !html.contains("'option'"), "rows hold buttons, so they are not listbox options");
+        assert!(html.contains("$('searchBox').addEventListener('focusout'"), "moving focus into the menu's buttons must not close it");
+    }
+
+    #[tokio::test]
     async fn the_theme_controls_name_the_current_mode() {
         let app = gated(router(state("http://127.0.0.1:1", "http://127.0.0.1:1")), Gate::Local);
         let resp = app.oneshot(local_get("/")).await.unwrap();

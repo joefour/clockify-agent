@@ -18,7 +18,7 @@ Architecture:
 - `src/clockify.rs`: Clockify API client over ureq: time entries, projects, tasks, detailed report
 - `src/config.rs`: layered config, RMS .env, then user TOML, then env vars
 - `src/summary.rs`: date range presets, totals by project and task
-- `src/trello.rs`: `trello-agent meta` for the card title, Trello REST for the board id and name, `trello card` fallback; `search_cards` for the dashboard
+- `src/trello.rs`: `trello-agent meta` for the card title, Trello REST for the board id and name, `trello card` fallback; `search_cards` and `fetch_card_hit` (pasted links) for the dashboard
 - `src/timeutil.rs`: duration, time and date parsing ("2h30m", "1:30", "09:00", "4h ago") and H:MM:SS formatting
 - `src/validator.rs`: daily 14h cap and overlap checks
 

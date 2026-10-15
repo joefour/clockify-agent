@@ -8,9 +8,11 @@ mod validator;
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, FixedOffset, Local, NaiveDate, NaiveTime, SecondsFormat, TimeDelta, Timelike, Utc};
 use clap::{Parser, Subcommand};
+use serde::Serialize;
 
 use crate::clockify::{Client, TimeEntry, TimeEntryRequest};
 use crate::config::Config;
+use crate::trello::CardInfo;
 
 #[derive(Parser)]
 #[command(name = "clockify", about = "Log Clockify time entries and view summaries")]
@@ -203,14 +205,14 @@ fn entry_name(card_number: &str, description: &str) -> String {
 
 fn main() {
     let result = match Cli::parse().command {
-        Cmd::Log { args, date, dry_run, project_id, task_id, description } => run_log(
-            &args,
-            date.as_deref().unwrap_or(""),
+        Cmd::Log { args, date, dry_run, project_id, task_id, description } => run_log(&LogRequest {
+            args,
+            date: date.unwrap_or_default(),
             dry_run,
-            project_id.as_deref().unwrap_or(""),
-            task_id.as_deref().unwrap_or(""),
-            description.as_deref().unwrap_or(""),
-        ),
+            project_id: project_id.unwrap_or_default(),
+            task_id: task_id.unwrap_or_default(),
+            description: description.unwrap_or_default(),
+        }),
         Cmd::Summary { preset, by_task, from, to } => run_summary(
             preset.as_deref().unwrap_or(""),
             from.as_deref().unwrap_or(""),
@@ -224,54 +226,105 @@ fn main() {
     }
 }
 
-fn run_log(
-    args: &[String],
-    date: &str,
+/// What `clockify log` takes, as the CLI and the dashboard pass it.
+struct LogRequest {
+    args: Vec<String>,
+    date: String,
     dry_run: bool,
-    project_id_override: &str,
-    task_id: &str,
-    description: &str,
-) -> Result<()> {
-    let parsed = parse_log_args(args, description)?;
-    let mode = parsed.mode.with_extra(random_percent());
+    project_id: String,
+    task_id: String,
+    description: String,
+}
 
-    let explicit_date = !date.is_empty();
-    let date_str = if explicit_date { date.to_string() } else { Local::now().format("%Y-%m-%d").to_string() };
+/// One logged (or, on a dry run, described) entry. Times are RFC 3339 UTC; durations
+/// are seconds. On a real run the fields come from Clockify's answer.
+#[derive(Debug, Serialize)]
+struct LogOutcome {
+    dry_run: bool,
+    /// Empty for a description entry.
+    card_number: String,
+    description: String,
+    start: String,
+    end: String,
+    duration: i64,
+    project_id: String,
+    task_id: String,
+    /// Dry run only: the task that would be created, such as "#12".
+    new_task: String,
+    /// Empty on a dry run.
+    link: String,
+    project_total_today: Option<ProjectToday>,
+    /// Problems that did not stop the entry, without the "Warning: " prefix.
+    warnings: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ProjectToday {
+    name: String,
+    duration: i64,
+}
+
+/// The current time in whole seconds, as entries are sent.
+fn now_secs() -> DateTime<Utc> {
+    Utc::now().with_nanosecond(0).unwrap_or_else(Utc::now)
+}
+
+fn run_log(req: &LogRequest) -> Result<()> {
+    let cfg = config::load();
+    let client = Client::new(&cfg.api_key, &cfg.workspace_id);
+    let fetch = |url: &str| trello::fetch_card(url, &cfg.trello_api_key, &cfg.trello_token);
+    let outcome = log_entry(&cfg, &client, req, fetch, now_secs(), random_percent())?;
+    print_log(&outcome);
+    Ok(())
+}
+
+/// Validates and creates one entry, or only describes it on a dry run. `fetch_card`
+/// looks up a card URL; `percent` is the jitter added to durations.
+fn log_entry(
+    cfg: &Config,
+    client: &Client,
+    req: &LogRequest,
+    fetch_card: impl Fn(&str) -> Result<CardInfo>,
+    now: DateTime<Utc>,
+    percent: i64,
+) -> Result<LogOutcome> {
+    let parsed = parse_log_args(&req.args, &req.description)?;
+    let mode = parsed.mode.with_extra(percent);
+
+    let explicit_date = !req.date.is_empty();
+    let date_str = if explicit_date { req.date.clone() } else { now.with_timezone(&Local).format("%Y-%m-%d").to_string() };
     let day = timeutil::parse_date(&date_str).context("invalid date format")?;
 
-    let cfg = config::load();
     let card = match &parsed.card_url {
-        Some(url) => trello::fetch_card(url, &cfg.trello_api_key, &cfg.trello_token).context("failed to fetch card info")?,
-        None => trello::CardInfo { title: description.to_string(), ..Default::default() },
+        Some(url) => fetch_card(url).context("failed to fetch card info")?,
+        None => CardInfo { title: req.description.clone(), ..Default::default() },
     };
 
-    let now = Utc::now().with_nanosecond(0).unwrap_or_else(Utc::now);
     let (start, end) = entry_times(&mode, day, explicit_date, now);
     let duration = (end - start).num_seconds();
 
-    let mut project_id = project_id_override.to_string();
+    let mut project_id = req.project_id.clone();
     if project_id.is_empty() && parsed.card_url.is_some() {
         project_id = cfg.get_clockify_project_id(&card.board_id, &card.board_name);
     }
-    if project_id.is_empty() && description.is_empty() {
+    if project_id.is_empty() && req.description.is_empty() {
         bail!("no project ID found (configure board-to-project mapping in config or use --project-id)");
     }
     if project_id.is_empty() {
         bail!("--project-id is required when using --description without a card URL");
     }
 
-    let client = Client::new(&cfg.api_key, &cfg.workspace_id);
-
     // A task is tied to a card number, so only card entries look one up.
     let task_name = format!("#{}", card.card_number);
-    let task = if !task_id.is_empty() {
-        Some(task_id.to_string())
+    let task = if !req.task_id.is_empty() {
+        Some(req.task_id.clone())
     } else if parsed.card_url.is_some() {
-        resolve_task(&client, &project_id, &task_name, dry_run)?
+        resolve_task(client, &project_id, &task_name, req.dry_run)?
     } else {
         None
     };
 
+    let mut warnings = Vec::new();
     match client.entries_between(&cfg.user_id, &date_str, &date_str) {
         Ok(entries) => {
             if let Some(c) = validator::has_overlap(start, end, &entries) {
@@ -291,38 +344,35 @@ fn run_log(
                 );
             }
         }
-        Err(e) => {
-            eprintln!("Warning: Could not fetch existing entries for overlap check: {e:#}");
-            eprintln!("Proceeding without overlap validation.");
-        }
+        Err(e) => warnings.push(format!(
+            "Could not fetch existing entries for overlap check: {e:#}\nProceeding without overlap validation."
+        )),
     }
 
     let rfc3339 = |t: DateTime<Utc>| t.to_rfc3339_opts(SecondsFormat::Secs, true);
 
-    if dry_run {
-        println!("Would create time entry:");
-        if card.card_number.is_empty() {
-            println!("  Card:        (no ticket)");
-        } else {
-            println!("  Card:        {}", card.card_number);
-        }
-        println!("  Description: {}", card.title);
-        println!("  Start:       {}", rfc3339(start));
-        println!("  End:         {}", rfc3339(end));
-        println!("  Duration:    {}", timeutil::format_duration(duration));
-        println!("  Project:     {project_id}");
-        match &task {
-            Some(id) => println!("  Task:        {id}"),
-            None if parsed.card_url.is_some() => println!("  Task:        (would create {task_name})"),
-            None => {}
-        }
-        return Ok(());
+    if req.dry_run {
+        let new_task = if task.is_none() && parsed.card_url.is_some() { task_name } else { String::new() };
+        return Ok(LogOutcome {
+            dry_run: true,
+            card_number: card.card_number,
+            description: card.title,
+            start: rfc3339(start),
+            end: rfc3339(end),
+            duration,
+            project_id,
+            task_id: task.unwrap_or_default(),
+            new_task,
+            link: String::new(),
+            project_total_today: None,
+            warnings,
+        });
     }
 
     let request = TimeEntryRequest {
         project_id: project_id.clone(),
         task_id: task.unwrap_or_default(),
-        name: entry_name(&card.card_number, description),
+        name: entry_name(&card.card_number, &req.description),
         description: card.title.clone(),
         start: rfc3339(start),
         end: rfc3339(end),
@@ -330,30 +380,72 @@ fn run_log(
     };
     let result = client.create_entry(&request).context("Clockify API error")?;
 
-    println!("Created time entry:");
-    if card.card_number.is_empty() {
-        println!("  Description: {}", result.description);
-    } else {
-        println!("  Card:        {}", card.card_number);
-    }
-    println!("  Start:       {}", result.time_interval.start);
-    println!("  End:         {}", result.time_interval.end);
-    println!("  Duration:    {}", timeutil::format_duration(duration));
-    println!("  Project:     {}", result.project_id);
-    if !result.task_id.is_empty() {
-        println!("  Task:        {}", result.task_id);
-    }
-    println!(
-        "  Link:       https://app.clockify.me/workspaces/{}/time-entries/{}",
-        client.workspace_id(),
-        result.id
-    );
+    let project_total_today = match project_total_today(client, cfg, &result.project_id, now) {
+        Ok(t) => Some(t),
+        Err(e) => {
+            warnings.push(format!("Could not fetch project total: {e:#}"));
+            None
+        }
+    };
+    Ok(LogOutcome {
+        dry_run: false,
+        card_number: card.card_number,
+        description: result.description,
+        start: result.time_interval.start,
+        end: result.time_interval.end,
+        duration,
+        project_id: result.project_id,
+        task_id: result.task_id,
+        new_task: String::new(),
+        link: format!("https://app.clockify.me/workspaces/{}/time-entries/{}", client.workspace_id(), result.id),
+        project_total_today,
+        warnings,
+    })
+}
 
-    println!();
-    if let Err(e) = print_project_total_today(&client, &cfg, &result.project_id) {
-        eprintln!("Warning: Could not fetch project total: {e:#}");
+/// Prints an outcome the way `clockify log` always has.
+fn print_log(o: &LogOutcome) {
+    for w in &o.warnings {
+        eprintln!("Warning: {w}");
     }
-    Ok(())
+    let fmt = timeutil::format_duration;
+    if o.dry_run {
+        println!("Would create time entry:");
+        if o.card_number.is_empty() {
+            println!("  Card:        (no ticket)");
+        } else {
+            println!("  Card:        {}", o.card_number);
+        }
+        println!("  Description: {}", o.description);
+        println!("  Start:       {}", o.start);
+        println!("  End:         {}", o.end);
+        println!("  Duration:    {}", fmt(o.duration));
+        println!("  Project:     {}", o.project_id);
+        if !o.task_id.is_empty() {
+            println!("  Task:        {}", o.task_id);
+        } else if !o.new_task.is_empty() {
+            println!("  Task:        (would create {})", o.new_task);
+        }
+        return;
+    }
+    println!("Created time entry:");
+    if o.card_number.is_empty() {
+        println!("  Description: {}", o.description);
+    } else {
+        println!("  Card:        {}", o.card_number);
+    }
+    println!("  Start:       {}", o.start);
+    println!("  End:         {}", o.end);
+    println!("  Duration:    {}", fmt(o.duration));
+    println!("  Project:     {}", o.project_id);
+    if !o.task_id.is_empty() {
+        println!("  Task:        {}", o.task_id);
+    }
+    println!("  Link:       {}", o.link);
+    println!();
+    if let Some(t) = &o.project_total_today {
+        println!("Project total today: {} ({})", t.name, fmt(t.duration));
+    }
 }
 
 fn run_summary(preset: &str, from: &str, to: &str, by_task: bool) -> Result<()> {
@@ -385,16 +477,15 @@ fn run_summary(preset: &str, from: &str, to: &str, by_task: bool) -> Result<()> 
     Ok(())
 }
 
-/// Prints today's total for the project the new entry went to.
-fn print_project_total_today(client: &Client, cfg: &Config, project_id: &str) -> Result<()> {
-    let today = Local::now().format("%Y-%m-%d").to_string();
+/// Today's total for the project the new entry went to.
+fn project_total_today(client: &Client, cfg: &Config, project_id: &str, now: DateTime<Utc>) -> Result<ProjectToday> {
+    let today = now.with_timezone(&Local).format("%Y-%m-%d").to_string();
     let entries = client.entries_between(&cfg.user_id, &today, &today)?;
     let projects = client.list_projects()?;
     let totals = summary::compute_project_totals(&entries, &projects);
     let name = projects.iter().find(|p| p.id == project_id).map_or(project_id, |p| p.name.as_str());
-    let total = totals.iter().find(|t| t.name == name || t.name == project_id).map_or(0, |t| t.duration);
-    println!("Project total today: {name} ({})", timeutil::format_duration(total));
-    Ok(())
+    let duration = totals.iter().find(|t| t.name == name || t.name == project_id).map_or(0, |t| t.duration);
+    Ok(ProjectToday { name: name.to_string(), duration })
 }
 
 /// Names an entry in error messages: its task, else its description. Clockify's
@@ -656,5 +747,101 @@ mod tests {
         let name = entry_name("", &vietnamese);
         assert_eq!(name.chars().count(), 50);
         assert!(vietnamese.starts_with(&name));
+    }
+
+    use crate::config::ProjectMapping;
+    use mockito::Matcher;
+
+    fn cfg() -> Config {
+        Config { api_key: "test-api-key".into(), workspace_id: "ws123".into(), user_id: "u1".into(), ..Default::default() }
+    }
+
+    fn clockify(server: &mockito::Server) -> Client {
+        let mut c = Client::new("test-api-key", "ws123");
+        c.base_url = server.url();
+        c
+    }
+
+    fn no_fetch(_: &str) -> Result<CardInfo> {
+        panic!("a description entry looks up no card")
+    }
+
+    fn request(times: &[&str], description: &str, project_id: &str, dry_run: bool) -> LogRequest {
+        LogRequest {
+            args: args(times),
+            date: "2026-04-05".into(),
+            dry_run,
+            project_id: project_id.into(),
+            task_id: String::new(),
+            description: description.into(),
+        }
+    }
+
+    #[test]
+    fn log_entry_creates_a_description_entry() {
+        let mut server = mockito::Server::new();
+        server.mock("GET", "/workspaces/ws123/user/u1/time-entries").match_query(Matcher::Any).with_body("[]").create();
+        let create = server
+            .mock("POST", "/workspaces/ws123/time-entries")
+            .match_body(Matcher::Json(serde_json::json!({
+                "projectId": "p1", "name": "fix login", "description": "fix login",
+                "start": "2026-04-05T02:00:00Z", "end": "2026-04-05T03:00:00Z", "billable": true
+            })))
+            .with_status(201)
+            .with_body(r#"{"id":"e1","projectId":"p1","taskId":null,"description":"fix login","timeInterval":{"start":"2026-04-05T02:00:00Z","end":"2026-04-05T03:00:00Z"}}"#)
+            .create();
+        server.mock("GET", "/workspaces/ws123/projects").with_body(r#"[{"id":"p1","name":"Internal"}]"#).create();
+
+        let o = log_entry(&cfg(), &clockify(&server), &request(&["09:00", "1h"], "fix login", "p1", false), no_fetch, now(), 0).unwrap();
+
+        create.assert();
+        assert_eq!((o.dry_run, o.card_number.as_str(), o.description.as_str()), (false, "", "fix login"));
+        assert_eq!((o.start.as_str(), o.end.as_str(), o.duration), ("2026-04-05T02:00:00Z", "2026-04-05T03:00:00Z", 3600));
+        assert_eq!(o.link, "https://app.clockify.me/workspaces/ws123/time-entries/e1");
+        assert_eq!(o.project_total_today.as_ref().map(|t| t.name.as_str()), Some("Internal"));
+        assert!(o.warnings.is_empty(), "{:?}", o.warnings);
+    }
+
+    #[test]
+    fn log_entry_refuses_an_overlap() {
+        let mut server = mockito::Server::new();
+        server
+            .mock("GET", "/workspaces/ws123/user/u1/time-entries")
+            .match_query(Matcher::Any)
+            .with_body(r##"[{"id":"x","projectId":"p1","description":"Standup","task":{"name":"#12"},"timeInterval":{"start":"2026-04-05T02:30:00Z","end":"2026-04-05T03:30:00Z"}}]"##)
+            .create();
+        let create = server.mock("POST", "/workspaces/ws123/time-entries").expect(0).create();
+
+        let err = log_entry(&cfg(), &clockify(&server), &request(&["09:00", "1h"], "fix login", "p1", false), no_fetch, now(), 0)
+            .unwrap_err();
+
+        create.assert();
+        assert_eq!(err.to_string(), "Entry overlaps with existing entry #12 (02:30 - 03:30)");
+    }
+
+    #[test]
+    fn log_entry_dry_run_maps_the_card_and_creates_nothing() {
+        let mut server = mockito::Server::new();
+        server.mock("GET", "/workspaces/ws123/projects/p1/tasks").match_query(Matcher::Any).with_body("[]").create();
+        server.mock("GET", "/workspaces/ws123/user/u1/time-entries").match_query(Matcher::Any).with_body("[]").create();
+        let create_task = server.mock("POST", "/workspaces/ws123/projects/p1/tasks").expect(0).create();
+        let create = server.mock("POST", "/workspaces/ws123/time-entries").expect(0).create();
+        let mut cfg = cfg();
+        cfg.project_mappings =
+            vec![ProjectMapping { name: "RMS".into(), trello_board_id: "b1".into(), clockify_project_id: "p1".into() }];
+        let fetch = |url: &str| {
+            assert_eq!(url, CARD);
+            Ok(CardInfo { card_number: "12".into(), title: "Fix login".into(), board_id: "b1".into(), board_name: "RMS".into() })
+        };
+
+        let o = log_entry(&cfg, &clockify(&server), &request(&[CARD, "2h"], "", "", true), fetch, now(), 0).unwrap();
+
+        create.assert();
+        create_task.assert();
+        assert!(o.dry_run && o.link.is_empty());
+        assert_eq!((o.card_number.as_str(), o.description.as_str(), o.project_id.as_str()), ("12", "Fix login", "p1"));
+        assert_eq!((o.task_id.as_str(), o.new_task.as_str()), ("", "#12"));
+        // Mode A on an explicit date ends at now's VNT clock time (10:00) on that date.
+        assert_eq!((o.start.as_str(), o.end.as_str()), ("2026-04-05T01:00:00Z", "2026-04-05T03:00:00Z"));
     }
 }

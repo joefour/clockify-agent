@@ -51,6 +51,8 @@ Ask Claude runs with approvals off, like the tray, and Trello card text can stee
 
 Menu bar app "Clockify Agent". Click the clock and type a prompt; Send runs headless Claude Code (`claude -p`, `claude-sonnet-5-5`, `--permission-mode bypassPermissions`) in this repo, and the reply streams into the panel. The footer shows the CPU and memory of the run's process tree and of the tray itself.
 
+Find card (⌘F) searches open Trello cards through the dashboard's `GET /api/search` on 127.0.0.1:8767, so it needs the dashboard running; a click or ↩ copies the card's URL. The status bar's AUTO / LIGHT / DARK sets the panel's theme, kept in the app's defaults (`theme`).
+
 - **Test**: `make tray-test` (pure parts and the process runner, behind `-D SELFTEST`); `make check` also runs `cargo test`
 - **Build**: `make app` builds `build/Clockify Agent.app`
 - **Install**: `make install` from this checkout: the LaunchAgent's `--repo` is the directory it runs in. It installs `~/.local/bin/clockify`, `~/Applications/Clockify Agent.app` and the login item `com.clockifyagent.tray`. Remove: `make uninstall`.
@@ -60,6 +62,6 @@ Architecture:
 - `tray/main.swift`: claude argv and stream-json parsing, process usage via libproc (`proc_pid_rusage`, `proc_listchildpids`), the `Run` process runner (posix_spawn in its own process group), the menu bar icon, the `Tray` app delegate
 - `tray/Panel.swift`: panel phases and model, claude-usage's Swiss palette and layout helpers, `PanelController`
 
-Footprint rules: plain AppKit (no SwiftUI, no NSPopover); no timers while the panel is closed; stats every 2 s only while it shows; reply capped at 64 KB. Measured idle with the panel closed: about 17 MB, 0.0% CPU.
+Footprint rules: plain AppKit (no SwiftUI, no NSPopover); no timers while the panel is closed; stats every 2 s only while it shows; reply capped at 64 KB. Measured idle with the panel closed: about 18 MB, 0.0% CPU.
 
 Runs bypass permissions: Claude runs commands and Trello tools without asking. Only the panel starts a run, but Trello card text that Claude reads through the trello MCP (titles, descriptions, comments) also reaches it. A card written to inject instructions could make it run commands, write to Trello (comments, card edits, new cards), or upload a local file with the MCP's `add_attachment` (for example `~/.config/clockify-agent/config.yaml`, which holds the Clockify API key). The log and the panel show Bash commands only, not MCP tool calls. Treat card text as untrusted.

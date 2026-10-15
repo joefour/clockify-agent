@@ -152,13 +152,13 @@ func mem(_ bytes: UInt64) -> String {
 func pctText(_ cpu: Double?) -> String { cpu.map { String(format: "%.1f%%", $0) } ?? "—" }
 
 func claudeLine(_ procs: [ProcStat]?) -> String {
-    guard let procs, !procs.isEmpty else { return "Claude: idle" }
+    guard let procs, !procs.isEmpty else { return "Claude idle" }
     let cpus = procs.compactMap(\.cpu)
-    return "Claude: \(procs.count) process\(procs.count == 1 ? "" : "es") · CPU \(pctText(cpus.isEmpty ? nil : cpus.reduce(0, +))) · "
+    return "Claude \(procs.count) process\(procs.count == 1 ? "" : "es") · \(pctText(cpus.isEmpty ? nil : cpus.reduce(0, +))) · "
         + mem(procs.reduce(0) { $0 + $1.mem })
 }
 
-func trayLine(cpu: Double?, mem m: UInt64) -> String { "Tray: CPU \(pctText(cpu)) · " + mem(m) }
+func trayLine(cpu: Double?, mem m: UInt64) -> String { "Tray \(pctText(cpu)) · " + mem(m) }
 
 /// The cells of one expanded process row: pid, CPU, memory, name.
 func procCells(_ p: ProcStat) -> [String] { ["\(p.pid)", pctText(p.cpu), mem(p.mem), p.name] }
@@ -370,6 +370,27 @@ func argValue(_ args: [String], _ flag: String) -> String? {
 /// The dashboard `clockify serve` runs (dashboard/com.clockifyagent.dashboard.plist).
 let dashboardURL = URL(string: "http://127.0.0.1:8767")!
 
+/// The dashboard's card search for `query`, or nil under 2 characters (the dashboard
+/// would answer [] without asking Trello). Only unreserved ASCII stays as is: axum
+/// reads "+" as a space and "&" would end the value.
+func searchURL(_ query: String) -> URL? {
+    let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+    let keep = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~")
+    guard q.count >= 2, let e = q.addingPercentEncoding(withAllowedCharacters: keep) else { return nil }
+    return URL(string: "\(dashboardURL.absoluteString)/api/search?q=\(e)")
+}
+
+/// The dashboard's answer to a search; no status means no answer at all. The dashboard
+/// sends nothing until Trello answers, so a timeout means Trello is slow, not that it's down.
+func searchResults(status: Int?, body: Data?, error: Error? = nil) -> CardResults {
+    guard let status else { return .failed((error as? URLError)?.code == .timedOut ? "Search timed out" : "Dashboard not running") }
+    struct Failure: Decodable { let error: String }
+    let body = body ?? Data()
+    if status == 200, let cards = try? JSONDecoder().decode([CardHit].self, from: body) { return .found(cards) }
+    if let f = try? JSONDecoder().decode(Failure.self, from: body) { return .failed(f.error) }
+    return .failed("Dashboard error \(status)")
+}
+
 /// The dashboard over Tailscale, from --tailnet-url. make install passes an empty value
 /// when Tailscale wasn't running, and the tray then hides the button.
 func tailnetURL(_ args: [String]) -> URL? {
@@ -443,10 +464,10 @@ precondition(mem(5_767_168) == "5.5 MB" && mem(222_298_112) == "212 MB", "mem: \
 let ps = [ProcStat(pid: 51204, name: "claude", cpu: 6.9, mem: 184_549_376),
           ProcStat(pid: 51231, name: "trello-mcp", cpu: 0.4, mem: 30_408_704),
           ProcStat(pid: 51290, name: "clockify", cpu: 1.1, mem: 7_340_032)]
-precondition(claudeLine(nil) == "Claude: idle" && claudeLine([]) == "Claude: idle", "idle")
-precondition(claudeLine(ps) == "Claude: 3 processes · CPU 8.4% · 212 MB", "line: \(claudeLine(ps))")
-precondition(claudeLine([ProcStat(pid: 1, name: "claude", cpu: nil, mem: 1_048_576)]) == "Claude: 1 process · CPU — · 1.0 MB", "first sample")
-precondition(trayLine(cpu: 0, mem: 14_680_064) == "Tray: CPU 0.0% · 14 MB", "tray: \(trayLine(cpu: 0, mem: 14_680_064))")
+precondition(claudeLine(nil) == "Claude idle" && claudeLine([]) == "Claude idle", "idle")
+precondition(claudeLine(ps) == "Claude 3 processes · 8.4% · 212 MB", "line: \(claudeLine(ps))")
+precondition(claudeLine([ProcStat(pid: 1, name: "claude", cpu: nil, mem: 1_048_576)]) == "Claude 1 process · — · 1.0 MB", "first sample")
+precondition(trayLine(cpu: 0, mem: 14_680_064) == "Tray 0.0% · 14 MB", "tray: \(trayLine(cpu: 0, mem: 14_680_064))")
 precondition(procCells(ps[2]) == ["51290", "1.1%", "7.0 MB", "clockify"], "cells: \(procCells(ps[2]))")
 precondition(children(of: getpid()).isEmpty && children(of: -1).isEmpty, "children: none yet")
 precondition(ProcessInfo.processInfo.processName.hasPrefix(procName(getpid())) && procName(-1) == "?", "procName: \(procName(getpid()))")
@@ -551,6 +572,22 @@ precondition(tailnetURL(["x", "--tailnet-url", "https://mac.ts.net:8447"]) == UR
 precondition(tailnetURL(["x", "--tailnet-url", ""]) == nil && tailnetURL(["x"]) == nil, "no Tailscale at install: no URL")
 precondition(iconImage(.running).size == NSSize(width: 17, height: 17) && iconImage(.idle).isTemplate, "icon")
 
+// Find card: searchURL, searchResults, nextSel
+precondition(searchURL("") == nil && searchURL(" l \n") == nil, "under 2 characters: no search")
+precondition(searchURL(" a&b+c=d#é ")?.absoluteString == "http://127.0.0.1:8767/api/search?q=a%26b%2Bc%3Dd%23%C3%A9", "query escaped: \(String(describing: searchURL(" a&b+c=d#é ")))")
+let hitJSON = #"[{"id":"c1","number":482,"name":"Login fails","url":"https://trello.com/c/AbC123/482-login-fails","board":"RMS","board_id":"b1","mapped":true}]"#
+precondition(searchResults(status: 200, body: Data(hitJSON.utf8)) == .found([CardHit(number: 482, name: "Login fails", url: "https://trello.com/c/AbC123/482-login-fails", board: "RMS")]), "hits")
+precondition(searchResults(status: 200, body: Data("[]".utf8)) == .found([]), "no hits")
+precondition(searchResults(status: 400, body: Data(#"{"error":"Trello search failed: 401"}"#.utf8)) == .failed("Trello search failed: 401"), "the dashboard's error")
+precondition(searchResults(status: 403, body: Data("wrong host".utf8)) == .failed("Dashboard error 403"), "refused")
+precondition(searchResults(status: 200, body: Data("<html>".utf8)) == .failed("Dashboard error 200"), "not JSON")
+precondition(searchResults(status: nil, body: nil, error: URLError(.cannotConnectToHost)) == .failed("Dashboard not running"), "no answer")
+precondition(searchResults(status: nil, body: nil, error: URLError(.timedOut)) == .failed("Search timed out"), "slow Trello")
+precondition(nextSel(1, 1, count: 3) == 2 && nextSel(2, 1, count: 3) == 0 && nextSel(0, -1, count: 3) == 2, "↑↓ wrap")
+precondition(nextSel(0, 1, count: 0) == 0, "no rows")
+precondition(Theme.auto.appearance == nil && Theme.light.appearance?.name == .aqua && Theme.dark.appearance?.name == .darkAqua, "theme appearances")
+precondition(Theme(rawValue: "dark") == .dark && Theme(rawValue: "") == nil, "theme from the defaults")
+
 print("tray selftest ok")
 exit(0)
 #endif
@@ -583,6 +620,8 @@ final class Tray: NSObject, NSApplicationDelegate {
     var icon = IconState.idle { didSet { if icon != oldValue { showIcon() } } }
     var quitting = false
     var signals: [DispatchSourceSignal] = []
+    var searchSeq = 0, copySeq = 0  // only the newest search shows; only the newest copy clears COPIED
+    var searchWork: DispatchWorkItem?
 
     let tailnet: URL?
 
@@ -623,6 +662,10 @@ final class Tray: NSObject, NSApplicationDelegate {
         model.onLog = { [unowned self] in closePanel(); NSWorkspace.shared.open(logURL) }
         model.tailnet = tailnet
         model.onOpen = { [unowned self] in closePanel(); NSWorkspace.shared.open($0) }
+        model.onSearch = { [unowned self] in search($0) }
+        model.onCopy = { [unowned self] in copy($0) }
+        model.onTheme = { [unowned self] in setTheme($0) }
+        setTheme(Theme(rawValue: UserDefaults.standard.string(forKey: "theme") ?? "") ?? .auto)
         if tailnet == nil { NSLog("No --tailnet-url: Tailscale wasn't running at make install, so the Tailscale button is hidden.") }
         model.onQuit = { [unowned self] in closePanel(); quit() }
         model.onResize = { [unowned self] in place() }
@@ -686,6 +729,60 @@ final class Tray: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Asks the dashboard 250 ms after the last keystroke, as its page does.
+    func search(_ text: String) {
+        searchWork?.cancel()
+        searchSeq += 1
+        copySeq += 1            // typing again cancels the close that follows a copy
+        if model.copied != nil { model.copied = nil }
+        let seq = searchSeq
+        guard let url = searchURL(text) else {
+            model.stale = false
+            model.pendingCopy = false
+            if model.results != .empty { model.results = .empty }
+            return
+        }
+        model.stale = true
+        if model.results == .empty { model.results = .searching }
+        let w = DispatchWorkItem { [unowned self] in
+            // Over the dashboard's own 10 s Trello timeout, so its error arrives first.
+            URLSession.shared.dataTask(with: URLRequest(url: url, timeoutInterval: 15)) { [unowned self] data, resp, err in
+                let r = searchResults(status: (resp as? HTTPURLResponse)?.statusCode, body: data, error: err)
+                DispatchQueue.main.async { [unowned self] in
+                    guard seq == searchSeq else { return }
+                    if case .failed(let why) = r { NSLog("card search failed: %@", why) }
+                    model.stale = false
+                    model.results = r
+                    if model.pendingCopy, case .found(let cards) = r, let top = cards.first { copy(top) }
+                    model.pendingCopy = false
+                }
+            }.resume()
+        }
+        searchWork = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: w)
+    }
+
+    func setTheme(_ t: Theme) {
+        model.theme = t
+        NSApp.appearance = t.appearance
+        UserDefaults.standard.set(t.rawValue, forKey: "theme")
+    }
+
+    func copy(_ c: CardHit) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(c.url, forType: .string)
+        copySeq += 1
+        let seq = copySeq
+        model.copied = c.url
+        announce("Copied link to #\(c.number)")
+        // COPIED shows for 1.5 s, then the dropdown closes and the footer shows again.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [unowned self] in
+            guard seq == copySeq else { return }
+            model.copied = nil
+            model.dropOpen = false
+        }
+    }
+
     func ended(_ r: Run, _ e: Exit) {
         NSLog("claude exited (%@)", "\(e)")
         run = nil
@@ -742,6 +839,8 @@ final class Tray: NSObject, NSApplicationDelegate {
 
     func closePanel() {
         guard window.isVisible else { return }
+        panel.hideDrop()
+        model.dropOpen = false
         window.orderOut(nil)
         if let c = clicks { NSEvent.removeMonitor(c) }
         clicks = nil

@@ -55,6 +55,37 @@ func promptTitle(_ s: String) -> String {
     return t.count > 40 ? t.prefix(40) + "…" : t
 }
 
+/// One open Trello card from the dashboard's /api/search.
+struct CardHit: Decodable, Equatable {
+    let number: Int
+    let name: String
+    let url: String
+    let board: String
+}
+
+/// What the Find card section shows under its field.
+enum CardResults: Equatable {
+    case empty                  // under 2 characters typed
+    case searching              // the first search for this text is still out
+    case found([CardHit])
+    case failed(String)
+}
+
+/// The picked row after ↑ (-1) or ↓ (+1), wrapping at either end.
+func nextSel(_ sel: Int, _ delta: Int, count: Int) -> Int {
+    count == 0 ? 0 : ((sel + delta) % count + count) % count
+}
+
+/// The panel's colours: follow macOS, or always light or dark. Kept in the defaults as its raw value.
+enum Theme: String, CaseIterable {
+    case auto, light, dark
+    /// What NSApp.appearance gets; nil follows macOS.
+    var appearance: NSAppearance? { self == .auto ? nil : NSAppearance(named: self == .dark ? .darkAqua : .aqua) }
+}
+
+/// The panel's column, and the search field and its dropdown inside its 16 pt margins.
+let panelWidth: CGFloat = 420, dropWidth = panelWidth - 32
+
 // MARK: - Model
 
 /// The panel's state. Tray sets it; PanelController shows it while the panel is open.
@@ -70,15 +101,28 @@ final class PanelModel {
     var tray = ""
     var tailnet: URL?                                    // the dashboard over Tailscale; nil hides its button
     var cap: CGFloat = 400                               // tallest the whole panel may be; Tray sets it from the screen
+    // The card search updates its rows in place (cardsChanged): a rebuild would end the
+    // field's editing, an input method's composition with it, and jump the reply to its end.
+    var results = CardResults.empty { didSet { cardSel = 0; cardsChanged() } }
+    var cardSel = 0 { didSet { cardsChanged() } }        // the row ↩ copies
+    var copied: String? { didSet { cardsChanged() } }    // the URL just copied; its row says COPIED
+    var stale = false { didSet { cardsChanged() } }      // a newer search is out: rows dim and ↩ waits
+    var pendingCopy = false                              // ↩ came while stale: copy the newest answer's top card
+    var dropOpen = false { didSet { cardsChanged() } }   // typing opens the dropdown; Esc, leaving the field or a copy closes it
+    var theme = Theme.auto { didSet { changed() } }
     // Set by PanelController.
     var changed: () -> Void = {}
     var replyChanged: () -> Void = {}
     var statsChanged: () -> Void = {}
+    var cardsChanged: () -> Void = {}
     // Set by Tray.
     var onSend: (String) -> Void = { _ in }
     var onStop: () -> Void = {}
     var onLog: () -> Void = {}
     var onOpen: (URL) -> Void = { _ in }
+    var onSearch: (String) -> Void = { _ in }
+    var onCopy: (CardHit) -> Void = { _ in }
+    var onTheme: (Theme) -> Void = { _ in }
     var onQuit: () -> Void = {}
     var onResize: () -> Void = {}
 }
@@ -218,6 +262,12 @@ func still(_ f: () -> Void) {
     CATransaction.commit()
 }
 
+/// Has VoiceOver say `s` now.
+func announce(_ s: String) {
+    NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested,
+                         userInfo: [.announcement: s, .priority: NSAccessibilityPriorityLevel.high.rawValue])
+}
+
 /// Turns `l` about its center every `period` s, unless Reduce Motion.
 func turn(_ l: CALayer, _ period: Double) {
     guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
@@ -324,6 +374,7 @@ final class Press: NSButton {
     override func accessibilityChildren() -> [Any]? { nil }
     override func mouseEntered(with e: NSEvent) { hover = true; repaint() }
     override func mouseExited(with e: NSEvent) { hover = false; repaint() }
+    override func acceptsFirstMouse(for e: NSEvent?) -> Bool { true }   // the card dropdown's window never becomes key
 
     override func mouseDown(with e: NSEvent) {
         down = true
@@ -363,32 +414,44 @@ func btn(_ kind: BtnKind, _ p: Pal, _ title: String, size: CGFloat = 13, h: CGFl
     return b
 }
 
-/// A text-only button (the design's .txt): red ink while hot.
-func txtBtn(_ p: Pal, _ title: String, _ w: W, color: NSColor? = nil, pad: (CGFloat, CGFloat), key: String = "", _ act: @escaping () -> Void) -> Press {
-    let l = label(title, 13, w, color ?? p.ink)
-    let b = Press(l, pad: pad, minHeight: 36, act)
-    b.paint = { _, hot in recolor(l, hot ? p.redInk : color ?? p.ink) }
-    b.keyEquivalent = key
-    b.keyEquivalentModifierMask = .command
-    b.setAccessibilityLabel(title)
-    return b
-}
-
 // MARK: - Panel
 
 /// The panel's content. A state change rebuilds it; reply text and stats update in
-/// place. The prompt and reply text views are made once and moved into each rebuild,
+/// place. The prompt, reply and search fields are made once and moved into each rebuild,
 /// so typed text survives.
-final class PanelController: NSViewController, NSTextViewDelegate {
+final class PanelController: NSViewController, NSTextViewDelegate, NSTextFieldDelegate {
     let m: PanelModel
-    private var queued = false, replyQueued = false
+    private var queued = false, replyQueued = false, cardsQueued = false
     private let promptScroll = NSTextView.scrollableTextView(), replyScroll = NSTextView.scrollableTextView()
     private var prompt: NSTextView { promptScroll.documentView as! NSTextView }
     private var reply: NSTextView { replyScroll.documentView as! NSTextView }
     private let promptBox = NSView()      // the prompt's 2 pt border: NSScrollView keeps no border on its own layer
+    private let search = NSTextField(), searchBox = NSView()
     private lazy var replyHeight = replyScroll.heightAnchor.constraint(equalToConstant: 18)
     private var col: NSView?
-    private var meta: NSTextField?, claudeStat: NSTextField?, trayStat: NSTextField?, procRows: Stack?
+    private var meta: NSTextField?, claudeStat: NSTextField?, trayStat: NSTextField?, procRows: Stack?, statToggle: Press?
+    private let cardArea = vstack([], 0)
+    /// The card dropdown: a child window, so it can hang over the footer and past the panel's
+    /// bottom. Borderless, so it never becomes key and the search field keeps the keyboard.
+    lazy var drop: NSPanel = {
+        let w = NSPanel(contentRect: NSRect(x: 0, y: 0, width: dropWidth, height: 40), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
+        w.level = .popUpMenu
+        w.hasShadow = true
+        w.hidesOnDeactivate = false
+        w.isReleasedWhenClosed = false
+        let c = NSView()
+        c.wantsLayer = true
+        c.layer?.borderWidth = 2
+        cardArea.translatesAutoresizingMaskIntoConstraints = false
+        c.addSubview(cardArea)
+        NSLayoutConstraint.activate([
+            cardArea.topAnchor.constraint(equalTo: c.topAnchor, constant: 2),
+            cardArea.leadingAnchor.constraint(equalTo: c.leadingAnchor, constant: 2),
+            cardArea.widthAnchor.constraint(equalToConstant: dropWidth - 4),
+        ])
+        w.contentView = c
+        return w
+    }()
     private var shownPhase = Phase.idle
     private var p = pal(dark: false)
 
@@ -413,6 +476,14 @@ final class PanelController: NSViewController, NSTextViewDelegate {
             }
         }
         m.statsChanged = { [unowned self] in updateStats() }
+        m.cardsChanged = { [unowned self] in
+            guard !cardsQueued else { return }
+            cardsQueued = true
+            DispatchQueue.main.async { [unowned self] in
+                cardsQueued = false
+                updateCards()
+            }
+        }
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -420,7 +491,8 @@ final class PanelController: NSViewController, NSTextViewDelegate {
     override func loadView() {
         let r = Root()
         r.wantsLayer = true
-        r.onAppearance = { [unowned self] in if view.window?.isVisible == true { render() } }   // hidden: the next open renders
+        r.onAppearance = { [unowned self] in m.changed() }     // batched, and skipped while hidden: the next open renders
+        r.onFind = { [unowned self] in view.window?.makeFirstResponder(search) }
         view = r
         for s in [promptScroll, replyScroll] {
             s.drawsBackground = false
@@ -456,6 +528,24 @@ final class PanelController: NSViewController, NSTextViewDelegate {
         reply.textContainer?.lineFragmentPadding = 0
         reply.setAccessibilityLabel("Reply")
         replyHeight.isActive = true
+        search.isBordered = false
+        search.drawsBackground = false
+        search.focusRingType = .none
+        search.usesSingleLineMode = true
+        search.cell?.isScrollable = true
+        search.delegate = self
+        search.setAccessibilityLabel("Search Trello cards")
+        search.translatesAutoresizingMaskIntoConstraints = false
+        searchBox.wantsLayer = true
+        searchBox.layer?.borderWidth = 2
+        searchBox.translatesAutoresizingMaskIntoConstraints = false
+        searchBox.addSubview(search)
+        NSLayoutConstraint.activate([
+            searchBox.heightAnchor.constraint(equalToConstant: 36),
+            search.centerYAnchor.constraint(equalTo: searchBox.centerYAnchor),
+            search.leadingAnchor.constraint(equalTo: searchBox.leadingAnchor, constant: 8),
+            search.trailingAnchor.constraint(equalTo: searchBox.trailingAnchor, constant: -8),
+        ])
     }
 
     func focusPrompt() { view.window?.makeFirstResponder(prompt) }
@@ -469,35 +559,66 @@ final class PanelController: NSViewController, NSTextViewDelegate {
         return true
     }
 
+    func controlTextDidChange(_ n: Notification) {
+        m.dropOpen = true
+        m.onSearch(search.stringValue)
+    }
+
+    func controlTextDidEndEditing(_ n: Notification) { m.dropOpen = false }
+
+    /// In the search field: ↑↓ open the dropdown or pick a card, ↩ copies it, Esc closes the dropdown, then the panel.
+    func control(_ c: NSControl, textView: NSTextView, doCommandBy sel: Selector) -> Bool {
+        let cards: [CardHit] = if case .found(let f) = m.results { f } else { [] }
+        func pick(_ d: Int) {
+            guard m.dropOpen else { m.dropOpen = true; return }
+            m.cardSel = nextSel(m.cardSel, d, count: cards.count)
+            if cards.indices.contains(m.cardSel) { announce("#\(cards[m.cardSel].number) \(cards[m.cardSel].name)") }
+        }
+        switch sel {
+        case #selector(NSResponder.moveDown(_:)): pick(1)
+        case #selector(NSResponder.moveUp(_:)): pick(-1)
+        case #selector(NSResponder.insertNewline(_:)):
+            if m.stale { m.pendingCopy = true } else if m.dropOpen, cards.indices.contains(m.cardSel) { m.onCopy(cards[m.cardSel]) }
+        case #selector(NSResponder.cancelOperation(_:)): if m.dropOpen, m.results != .empty { m.dropOpen = false } else { view.window?.cancelOperation(nil) }
+        default: return false
+        }
+        return true
+    }
+
     func render() {
         queued = false
         let dark = view.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
         p = pal(dark: dark)
         if m.phase != shownPhase {
             if case .done = m.phase { prompt.string = "" }      // a failed prompt stays, to retry
-            if let (w, _) = statusWord(m.phase) {
-                NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested,
-                                     userInfo: [.announcement: w.capitalized, .priority: NSAccessibilityPriorityLevel.high.rawValue])
-            }
+            if let (w, _) = statusWord(m.phase) { announce(w.capitalized) }
             shownPhase = m.phase
         }
         let focused = view.window?.firstResponder === prompt
+        let caret = search.currentEditor()?.selectedRange     // the rebuild ends the search's editing; this restores it
+        let open = m.dropOpen                                  // and ending it closes the dropdown
         var items: [NSView] = [header(), promptSection()]
         if m.phase != .idle { items.append(replySection()) }
+        items.append(cardSection())
         items.append(footer())
-        let c = vstack(items, 16, inset: edges(16, 16, 16, 16))
+        let c = vstack([vstack(items, 16, inset: edges(16, 16, 6, 16)), statusBar()], 0)
         c.translatesAutoresizingMaskIntoConstraints = false
         view.subviews.forEach { $0.removeFromSuperview() }
         view.addSubview(c)
         NSLayoutConstraint.activate([
-            c.widthAnchor.constraint(equalToConstant: 360),
+            c.widthAnchor.constraint(equalToConstant: panelWidth),
             c.topAnchor.constraint(equalTo: view.topAnchor),
             c.leadingAnchor.constraint(equalTo: view.leadingAnchor),
         ])
         col = c
         view.layer?.backgroundColor = p.paper.cgColor
         if focused { focusPrompt() }
+        if let caret, view.window?.makeFirstResponder(search) == true {
+            search.currentEditor()?.selectedRange = caret
+            m.dropOpen = open
+        }
         flushReply()
+        m.cardsChanged()        // the dropdown's colours; after the window shows, on the first open
     }
 
     func header() -> NSView {
@@ -531,7 +652,7 @@ final class PanelController: NSViewController, NSTextViewDelegate {
             action.keyEquivalentModifierMask = .command
         }
         var items: [NSView] = [label("PROMPT", 11, .m, em: 0.06, p.muted), promptBox]
-        if let e = m.repoError { items.append(label(e, 13, .b, p.redInk, wrap: 328)) }
+        if let e = m.repoError { items.append(label(e, 13, .b, p.redInk, wrap: panelWidth - 32)) }
         items.append(hstack([running ? spacer() : label("⌘↩ to send · Esc to close", 12, p.muted), spacer(), action], 10))
         return vstack(items, 8)
     }
@@ -602,40 +723,157 @@ final class PanelController: NSViewController, NSTextViewDelegate {
         replyHeight.constant = min(max(h, 18), room)
         replyScroll.hasVerticalScroller = h > room
         m.onResize()
+        if drop.parent != nil { placeDrop() }
     }
 
-    func footer() -> NSView {
-        let buttons: [NSView?] = [
-            txtBtn(p, "Open Log", .b, pad: (0, 8)) { [unowned self] in m.onLog() },
-            txtBtn(p, "Dashboard", .b, pad: (8, 8)) { [unowned self] in m.onOpen(dashboardURL) },
-            m.tailnet.map { url in txtBtn(p, "Via Tailscale", .b, pad: (8, 8)) { [unowned self] in m.onOpen(url) } },
-            spacer(),
-            txtBtn(p, "Quit", .r, color: p.muted, pad: (8, 0), key: "q") { [unowned self] in m.onQuit() },
-        ]
-        let row = hstack(buttons.compactMap { $0 }, 4)
-        let c = label(claudeLine(m.claude), 12, p.muted), t = label(m.tray, 12, p.muted)
-        claudeStat = c
-        trayStat = t
-        let chevron = fixed(NSImageView(image: NSImage(systemSymbolName: m.procsOpen ? "chevron.down" : "chevron.right", accessibilityDescription: nil)!
-            .withSymbolConfiguration(.init(pointSize: 8, weight: .bold))!), w: 10)
-        chevron.contentTintColor = p.muted
-        let toggle = Press(hstack([chevron, c, spacer()], 4), fill: true) { [unowned self] in m.procsOpen.toggle() }
-        toggle.paint = { [unowned self] _, hot in
-            recolor(c, hot ? p.redInk : p.muted)
-            chevron.contentTintColor = hot ? p.redInk : p.muted
+    /// FIND CARD: a one-line search; its up to 10 open cards drop down over the footer. A click or ↩ copies a card's URL.
+    func cardSection() -> NSView {
+        searchBox.layer?.borderColor = p.ink.cgColor
+        search.font = hvFont(15)
+        search.textColor = p.ink
+        search.placeholderAttributedString = NSAttributedString(string: "Search Trello cards", attributes: [.font: hvFont(15), .foregroundColor: p.muted])
+        return vstack([label("FIND CARD", 11, .m, em: 0.06, p.muted), searchBox], 8)
+    }
+
+    /// The dropdown's rows, or one line saying why there are none.
+    func fillCards() {
+        func note(_ l: NSTextField) -> NSView { vstack([l], 0, inset: edges(7, 8, 7, 8)) }
+        let views: [NSView] = switch m.results {
+        case .empty: []
+        case .searching: [note(label("Searching…", 12, p.muted))]
+        case .failed(let why): [note(label(why, 13, .b, p.redInk, wrap: dropWidth - 20))]
+        case .found(let cards) where cards.isEmpty: [note(label("No open cards", 12, p.muted))]
+        case .found(let cards):
+            cards.enumerated().flatMap { i, c in
+                (i > 0 ? [block(p.muted.withAlphaComponent(0.3), h: 1)] : []) + [cardRow(c, i)]
+            }
         }
-        toggle.setAccessibilityLabel("Claude processes")
-        toggle.setAccessibilityValue(m.procsOpen ? "expanded" : "collapsed")
-        var stats: [NSView] = [toggle]
+        for v in views {
+            cardArea.addArrangedSubview(v)
+            v.widthAnchor.constraint(equalTo: cardArea.widthAnchor).isActive = true
+        }
+        cardArea.alphaValue = m.stale ? 0.4 : 1
+    }
+
+    /// Refills the dropdown in place (a panel rebuild would end the search's editing), then shows or hides it.
+    func updateCards() {
+        guard view.window?.isVisible == true else { return }
+        cardArea.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        fillCards()
+        placeDrop()
+    }
+
+    /// Hangs the dropdown from the search field, its top border on the field's bottom one.
+    func placeDrop() {
+        guard m.dropOpen, m.results != .empty, let win = view.window, win.isVisible else { return hideDrop() }
+        drop.contentView?.layer?.borderColor = p.ink.cgColor
+        drop.contentView?.layer?.backgroundColor = p.paper.cgColor
+        view.layoutSubtreeIfNeeded()
+        cardArea.layoutSubtreeIfNeeded()
+        let box = win.convertToScreen(searchBox.convert(searchBox.bounds, to: nil))
+        let floor = (win.screen ?? NSScreen.main)?.visibleFrame.minY ?? 0
+        // shortcut: rows below the screen's bottom edge are cut off; add a scroll view if that bites.
+        let h = min(cardArea.fittingSize.height + 4, box.minY + 2 - floor)
+        drop.setFrame(NSRect(x: box.minX, y: box.minY + 2 - h, width: box.width, height: h), display: true)
+        if drop.parent == nil { win.addChildWindow(drop, ordered: .above) }
+    }
+
+    func hideDrop() {
+        drop.parent?.removeChildWindow(drop)
+        drop.orderOut(nil)
+    }
+
+    /// "#482  Login fails  RMS"; ink fill while hot or picked, like a button. COPIED replaces the board for 1.5 s.
+    func cardRow(_ c: CardHit, _ i: Int) -> NSView {
+        let sel = i == m.cardSel
+        let copied = m.copied == c.url
+        let num = label("#\(c.number)", 12, .m, p.muted), name = label(c.name, 13, .b, p.ink)
+        let side = copied ? label("COPIED", 11, .b, em: 0.04, p.redInk) : label(c.board, 12, p.muted)
+        name.setContentCompressionResistancePriority(.init(100), for: .horizontal)
+        let r = Press(hstack([fixed(num, w: 44), stretch(name), side], 8), pad: (8, 8), minHeight: 30, fill: true) { [unowned self] in
+            m.cardSel = i
+            m.onCopy(c)
+        }
+        r.paint = { [unowned self] r, hot in
+            let on = hot || sel
+            r.layer?.backgroundColor = (on ? p.ink : .clear).cgColor
+            recolor(num, on ? p.paper : p.muted)
+            recolor(name, on ? p.paper : p.ink)
+            recolor(side, on ? p.paper : copied ? p.redInk : p.muted)
+        }
+        r.toolTip = c.url
+        r.setAccessibilityLabel("Copy link to #\(c.number) \(c.name), \(c.board)")
+        return r
+    }
+
+    /// The links, and the process list when it's open; the status bar goes under them, flush with the edges.
+    func footer() -> NSView {
+        let links: [NSView?] = [
+            link("Open Log", pad: (0, 8)) { [unowned self] in m.onLog() },
+            link("Dashboard", ext: true, pad: (8, 8)) { [unowned self] in m.onOpen(dashboardURL) },
+            m.tailnet.map { url in link("Via Tailscale", ext: true, pad: (8, 8)) { [unowned self] in m.onOpen(url) } },
+        ]
+        var items: [NSView] = [block(p.ink, h: 1), hstack(links.compactMap { $0 } + [spacer()], 4)]
+        procRows = nil
         if m.procsOpen {
             let rows = vstack(procRowViews(), 2)
             procRows = rows
-            stats.append(rows)
-        } else {
-            procRows = nil
+            items.append(rows)
         }
-        stats.append(t)
-        return vstack([block(p.ink, h: 1), row, vstack(stats, 3)], 3)
+        return vstack(items, 3)
+    }
+
+    /// A footer link, red ink while hot; ↗ marks the ones that open a browser.
+    func link(_ title: String, ext: Bool = false, pad: (CGFloat, CGFloat), _ act: @escaping () -> Void) -> Press {
+        let l = label(title, 13, .b, p.ink), arrow = label("↗", 13, p.muted)
+        let b = Press(hstack(ext ? [l, arrow] : [l], 2), pad: pad, minHeight: 36, act)
+        b.paint = { [unowned self] _, hot in
+            recolor(l, hot ? p.redInk : p.ink)
+            recolor(arrow, hot ? p.redInk : p.muted)
+        }
+        b.setAccessibilityLabel(title)
+        return b
+    }
+
+    /// Small capitals on the status bar.
+    func barText(_ s: String, _ c: NSColor, _ w: W = .b) -> NSTextField { label(s.uppercased(), 10.5, w, em: 0.04, c) }
+
+    /// The ink bar along the bottom edge, like the header's rule: Claude's state (a red square while
+    /// it runs; a click opens the process list), the tray's usage, the theme and Quit.
+    func statusBar() -> NSView {
+        let fg = p.paper, dim = p.paper.withAlphaComponent(0.6)
+        let running: Bool = if case .running = m.phase { true } else { false }
+        let c = barText(claudeLine(m.claude), fg), t = barText(m.tray, dim, .m)
+        claudeStat = c
+        trayStat = t
+        c.setContentCompressionResistancePriority(.init(200), for: .horizontal)
+        t.setContentCompressionResistancePriority(.init(100), for: .horizontal)
+        let toggle = stretch(Press(hstack([block(running ? swissRed : fg, w: 7, h: 7), c, t, spacer()], 8), minHeight: 34, fill: true) { [unowned self] in
+            m.procsOpen.toggle()
+        })
+        toggle.paint = { _, hot in recolor(c, hot ? swissRed : fg) }
+        toggle.setAccessibilityLabel("Claude processes")
+        statToggle = toggle
+        statsSpoken()
+        let themes = Theme.allCases.map { th in
+            let on = th == m.theme
+            let l = barText(th.rawValue, on ? fg : dim)
+            let b = Press(vstack([l, block(on ? swissRed : .clear, h: 2)], 2), minHeight: 34) { [unowned self] in m.onTheme(th) }
+            b.paint = { _, hot in recolor(l, hot ? swissRed : on ? fg : dim) }
+            b.setAccessibilityLabel("\(th.rawValue.capitalized) theme" + (on ? ", selected" : ""))
+            return b
+        }
+        let q = barText("Quit", dim)
+        let quit = Press(q, pad: (10, 0), minHeight: 34) { [unowned self] in m.onQuit() }
+        quit.paint = { _, hot in recolor(q, hot ? swissRed : dim) }
+        quit.keyEquivalent = "q"
+        quit.keyEquivalentModifierMask = .command
+        quit.setAccessibilityLabel("Quit")
+        let row = hstack([toggle, hstack(themes, 8), block(dim, w: 1, h: 14), quit], 10)
+        let bar = vstack([row], 0, inset: edges(0, 16, 0, 16))
+        bar.wantsLayer = true
+        bar.layer?.backgroundColor = p.ink.cgColor
+        return bar
     }
 
     func procRowViews() -> [NSView] {
@@ -648,11 +886,17 @@ final class PanelController: NSViewController, NSTextViewDelegate {
         return [row(["pid", "CPU", "Mem", "Process"], .b, p.ink)] + procs.map { row(procCells($0), .r, p.muted) }
     }
 
+    /// The toggle hides its labels from VoiceOver, so its value reads them.
+    func statsSpoken() {
+        statToggle?.setAccessibilityValue("\(m.procsOpen ? "expanded" : "collapsed"), \(claudeLine(m.claude)), \(m.tray)")
+    }
+
     /// Updates the stat lines, the meta line and an open process list in place.
     func updateStats() {
         guard view.window?.isVisible == true, let c = claudeStat, let t = trayStat else { return }
-        c.attributedStringValue = label(claudeLine(m.claude), 12, p.muted).attributedStringValue
-        t.attributedStringValue = label(m.tray, 12, p.muted).attributedStringValue
+        c.attributedStringValue = barText(claudeLine(m.claude), p.paper).attributedStringValue
+        t.attributedStringValue = barText(m.tray, p.paper.withAlphaComponent(0.6), .m).attributedStringValue
+        statsSpoken()
         if let meta, case .running = m.phase { meta.attributedStringValue = label(metaText(m.phase, now: Date()), 12, p.muted).attributedStringValue }
         if let rows = procRows {
             rows.arrangedSubviews.forEach { $0.removeFromSuperview() }
@@ -664,7 +908,17 @@ final class PanelController: NSViewController, NSTextViewDelegate {
 
 private final class Root: NSView {
     var onAppearance: () -> Void = {}
+    var onFind: () -> Void = {}
     override var isFlipped: Bool { true }
+
+    /// ⌘F goes to the card search.
+    override func performKeyEquivalent(with e: NSEvent) -> Bool {
+        guard e.modifierFlags.intersection([.command, .shift, .option, .control]) == .command, e.charactersIgnoringModifiers?.lowercased() == "f" else {
+            return super.performKeyEquivalent(with: e)
+        }
+        onFind()
+        return true
+    }
 
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()

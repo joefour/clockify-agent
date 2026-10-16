@@ -171,7 +171,9 @@ impl Ask {
             return Err(StartError::Busy);
         }
         let mut cmd = Command::new(&self.exe);
-        if let Some(dir) = orca_claude_dir() {
+        if std::env::var_os("CLAUDE_CONFIG_DIR").is_none()
+            && let Some(dir) = orca_claude_dir()
+        {
             cmd.env("CLAUDE_CONFIG_DIR", dir);
         }
         let mut child = cmd
@@ -340,13 +342,30 @@ fn now_ms() -> u64 {
 fn orca_claude_dir() -> Option<String> {
     let home = std::env::var_os("HOME")?;
     let f = std::path::Path::new(&home).join("Library/Application Support/orca/claude-profiles/selected-host");
-    let dir = std::fs::read_to_string(f).ok()?.trim().to_string();
-    std::path::Path::new(&dir).is_dir().then_some(dir)
+    pick_claude_dir(&std::fs::read_to_string(f).ok()?)
+}
+
+/// Orca's own wrapper takes only an absolute path; an empty file means "System default".
+fn pick_claude_dir(pointer: &str) -> Option<String> {
+    let dir = pointer.trim();
+    let p = std::path::Path::new(dir);
+    (p.is_absolute() && p.is_dir()).then(|| dir.to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claude_dir_pointer() {
+        let tmp = std::env::temp_dir();
+        let d = tmp.to_str().unwrap();
+        assert_eq!(pick_claude_dir(&format!("{d}\n")).as_deref(), Some(d));
+        assert_eq!(pick_claude_dir(""), None);
+        assert_eq!(pick_claude_dir("  \n"), None);
+        assert_eq!(pick_claude_dir("/no/such/dir/for/clockify"), None);
+        assert_eq!(pick_claude_dir("."), None);
+    }
     use std::os::unix::fs::PermissionsExt;
 
     // Lines trimmed from a real run (2026-10-13), as in the tray's selftest.

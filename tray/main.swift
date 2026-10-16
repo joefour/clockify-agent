@@ -179,6 +179,8 @@ enum Exit: Equatable {
 /// One headless run in its own process group, so Stop reaches claude and every
 /// child it started. stdout is split into lines and parsed; stderr goes to the
 /// log and its last 20 lines are kept. Callbacks run on the main queue.
+var injectedClaudeDir: String?
+
 final class Run {
     let pid: pid_t
     let started = Date()
@@ -214,14 +216,15 @@ final class Run {
         let argv: [UnsafeMutablePointer<CChar>?] = ([exe] + args).map { strdup($0) } + [nil]
         defer { argv.forEach { free($0) } }
         // A LaunchAgent has no CLAUDE_CONFIG_DIR; use the account selected in Orca (read per run, so a switch is live).
-        var env = ProcessInfo.processInfo.environment
-        if let dir = try? String(contentsOfFile: NSHomeDirectory() + "/Library/Application Support/orca/claude-profiles/selected-host", encoding: .utf8)
-            .trimmingCharacters(in: .whitespacesAndNewlines), FileManager.default.fileExists(atPath: dir) {
-            env["CLAUDE_CONFIG_DIR"] = dir
+        // Only a value the tray set itself is replaced; one the user exported stays.
+        if getenv("CLAUDE_CONFIG_DIR").map({ String(cString: $0) }) == injectedClaudeDir,
+           let dir = try? String(contentsOfFile: NSHomeDirectory() + "/Library/Application Support/orca/claude-profiles/selected-host", encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           dir.hasPrefix("/"), FileManager.default.fileExists(atPath: dir) {
+            setenv("CLAUDE_CONFIG_DIR", dir, 1)
+            injectedClaudeDir = dir
         }
-        let envp: [UnsafeMutablePointer<CChar>?] = env.map { strdup("\($0.key)=\($0.value)") } + [nil]
-        defer { envp.forEach { free($0) } }
-        let rc = posix_spawnp(&pid, exe, &fa, &attr, argv, envp)
+        let rc = posix_spawnp(&pid, exe, &fa, &attr, argv, environ)
         // The child has its copies; without closing ours, the reads never see EOF.
         try? out.fileHandleForWriting.close()
         try? err.fileHandleForWriting.close()

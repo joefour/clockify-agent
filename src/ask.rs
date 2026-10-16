@@ -170,7 +170,11 @@ impl Ask {
         if s.running {
             return Err(StartError::Busy);
         }
-        let mut child = Command::new(&self.exe)
+        let mut cmd = Command::new(&self.exe);
+        if let Some(dir) = orca_claude_dir() {
+            cmd.env("CLAUDE_CONFIG_DIR", dir);
+        }
+        let mut child = cmd
             .args(claude_args(&prompt, &self.repo))
             .current_dir(&self.repo)
             .stdin(Stdio::null())
@@ -329,6 +333,15 @@ fn signal(pgid: i32, sig: i32) {
 
 fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+}
+
+/// The Claude account Orca has selected. A LaunchAgent has no CLAUDE_CONFIG_DIR, so without it
+/// `claude` would use the default login, not the one chosen in Orca. Read per run: switching is live.
+fn orca_claude_dir() -> Option<String> {
+    let home = std::env::var_os("HOME")?;
+    let f = std::path::Path::new(&home).join("Library/Application Support/orca/claude-profiles/selected-host");
+    let dir = std::fs::read_to_string(f).ok()?.trim().to_string();
+    std::path::Path::new(&dir).is_dir().then_some(dir)
 }
 
 #[cfg(test)]

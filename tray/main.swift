@@ -213,7 +213,15 @@ final class Run {
         var pid: pid_t = 0
         let argv: [UnsafeMutablePointer<CChar>?] = ([exe] + args).map { strdup($0) } + [nil]
         defer { argv.forEach { free($0) } }
-        let rc = posix_spawnp(&pid, exe, &fa, &attr, argv, environ)
+        // A LaunchAgent has no CLAUDE_CONFIG_DIR; use the account selected in Orca (read per run, so a switch is live).
+        var env = ProcessInfo.processInfo.environment
+        if let dir = try? String(contentsOfFile: NSHomeDirectory() + "/Library/Application Support/orca/claude-profiles/selected-host", encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines), FileManager.default.fileExists(atPath: dir) {
+            env["CLAUDE_CONFIG_DIR"] = dir
+        }
+        let envp: [UnsafeMutablePointer<CChar>?] = env.map { strdup("\($0.key)=\($0.value)") } + [nil]
+        defer { envp.forEach { free($0) } }
+        let rc = posix_spawnp(&pid, exe, &fa, &attr, argv, envp)
         // The child has its copies; without closing ours, the reads never see EOF.
         try? out.fileHandleForWriting.close()
         try? err.fileHandleForWriting.close()
